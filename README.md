@@ -47,7 +47,7 @@ geoip.mmdb
 
 ## Generated Artifacts (Latest Release)
 
-### GeoIP (MMDB)
+### GeoSite(JSON), GeoIP (MMDB)
 
 **Official**
 
