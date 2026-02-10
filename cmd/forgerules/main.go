@@ -9,6 +9,25 @@ import (
 	"github.com/CoderQuinn/ForgeRules/pkg/geosite"
 )
 
+type Source struct {
+    Name       string
+    GeoSiteURL string
+    GeoIPURL   string
+}
+
+var defaultSources = []Source{
+    {
+        Name:       "official",
+        GeoSiteURL: "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+        GeoIPURL:   "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+    },
+    {
+        Name:       "loyalsoldier",
+        GeoSiteURL: "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+        GeoIPURL:   "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+    },
+}
+
 func main() {
 	// Define command-line flags
 	geositeInput := flag.String("geosite-input", "", "Input geosite.dat file path")
@@ -33,11 +52,37 @@ func main() {
 
 	flag.Parse()
 
-	// Check if at least one input is provided
-	if *geositeInput == "" && *geoipInput == "" {
-		flag.Usage()
-		os.Exit(1)
-	}
+    // Auto mode: no input provided → download upstream rules
+    if *geositeInput == "" && *geoipInput == "" {
+        fmt.Println("No input specified. Using upstream sources...")
+
+        for _, src := range defaultSources {
+            fmt.Println("Processing:", src.Name)
+
+            geositeDat := src.Name + "_geosite.dat"
+            geoipDat := src.Name + "_geoip.dat"
+
+            if err := downloadFile(src.GeoSiteURL, geositeDat); err != nil {
+                panic(err)
+            }
+            if err := downloadFile(src.GeoIPURL, geoipDat); err != nil {
+                panic(err)
+            }
+
+            geositeJSON := src.Name + "_geosite.json"
+            geoipMMDB := src.Name + "_geoip.mmdb"
+
+            if err := geosite.DatToJSON(geositeDat, geositeJSON); err != nil {
+                panic(err)
+            }
+            if err := geoip.DatToMMDB(geoipDat, geoipMMDB); err != nil {
+                panic(err)
+            }
+        }
+
+        fmt.Println("Upstream conversion completed!")
+        return
+    }
 
 	// Convert geosite.dat to JSON if input is provided
 	if *geositeInput != "" {
