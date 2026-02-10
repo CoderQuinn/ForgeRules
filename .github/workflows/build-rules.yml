@@ -1,0 +1,65 @@
+name: Build Rules
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 每天 UTC 00:00 → 北京 08:00
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build converter
+        run: go build -o forgerules ./cmd/forgerules
+
+      - name: Run converter
+        run: |
+          ./forgerules
+
+      - name: Prepare release tag
+        id: tag
+        run: |
+          echo "tag=rules-$(date -u +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+      - name: Delete previous latest release
+        uses: dev-drprasad/delete-tag-and-release@v1.1
+        with:
+          tag_name: latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Create latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Rules
+          files: |
+            official_geosite.json
+            official_geoip.mmdb
+            loyalsoldier_geosite.json
+            loyalsoldier_geoip.mmdb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create dated release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Rules ${{ steps.tag.outputs.tag }}
+          files: |
+            official_geosite.json
+            official_geoip.mmdb
+            loyalsoldier_geosite.json
+            loyalsoldier_geoip.mmdb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
