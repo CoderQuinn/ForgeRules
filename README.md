@@ -10,14 +10,6 @@ Convert V2Ray rule databases into formats usable by other clients and SDKs.
 * **geoip.dat → geoip.mmdb**
   Convert V2Ray IP list into MaxMind MMDB (compatible with GeoIP2 readers)
 
-## Build
-
-Requires Go 1.19+
-
-```bash
-go build -o forgerules
-```
-
 ## Usage
 
 ### Convert geosite
@@ -49,19 +41,19 @@ geoip.mmdb
 
 ### GeoSite(JSON), GeoIP (MMDB)
 
-**Official**
+**Community**
 
 https://github.com/CoderQuinn/ForgeRules/releases/latest/download/official_geosite.json
 https://github.com/CoderQuinn/ForgeRules/releases/latest/download/official_geoip.mmdb
 
-**Community**
+**Community enhanced**
 
 https://github.com/CoderQuinn/ForgeRules/releases/latest/download/loyalsoldier_geosite.json
 https://github.com/CoderQuinn/ForgeRules/releases/latest/download/loyalsoldier_geoip.mmdb
 
 ## Data Sources
 
-Official:
+Community:
 
 * [https://github.com/v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
 * [https://github.com/v2fly/geoip](https://github.com/v2fly/geoip)
