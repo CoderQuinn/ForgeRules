@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	pb "github.com/CoderQuinn/ForgeRules/proto"
 	"github.com/maxmind/mmdbwriter"
@@ -59,6 +60,9 @@ func DatToMMDB(datPath, mmdbPath string) error {
 			}
 
 			if err := writer.Insert(ipNet, record); err != nil {
+				if strings.Contains(err.Error(), "reserved network") {
+					continue
+				}
 				fmt.Printf("Warning: failed to insert CIDR %s: %v\n", ipNet.String(), err)
 			}
 		}

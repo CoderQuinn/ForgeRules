@@ -45,6 +45,20 @@ geosite.json
 geoip.mmdb
 ```
 
+## Generated Artifacts (Latest Release)
+
+### GeoIP (MMDB)
+
+**Official**
+
+https://github.com/CoderQuinn/ForgeRules/releases/latest/download/official_geosite.json
+https://github.com/CoderQuinn/ForgeRules/releases/latest/download/official_geoip.mmdb
+
+**Community**
+
+https://github.com/CoderQuinn/ForgeRules/releases/latest/download/loyalsoldier_geosite.json
+https://github.com/CoderQuinn/ForgeRules/releases/latest/download/loyalsoldier_geoip.mmdb
+
 ## Data Sources
 
 Official:
@@ -59,9 +73,7 @@ Community enhanced:
 ## Purpose
 
 This project is intended as a preprocessing step for rule engines
-(e.g. DNS routing / traffic classification / proxy policy engines).
-
-Convert once → load fast at runtime.
+(e.g. DNS routing / traffic classification).
 
 ## License
 
