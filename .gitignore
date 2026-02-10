@@ -31,5 +31,5 @@ go.work.sum
 # .idea/
 # .vscode/
 
-# Built binaries
-forgerules
+# Built binaries (in root directory only)
+/forgerules
