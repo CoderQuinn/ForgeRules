@@ -23,6 +23,7 @@ func TestDownloadFileWithClient(t *testing.T) {
 		t.Fatalf("download file: %v", err)
 	}
 
+	// #nosec G304 -- path is created inside the test's temporary directory.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read downloaded file: %v", err)
