@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 
 	pb "github.com/CoderQuinn/ForgeRules/proto"
 	"github.com/maxmind/mmdbwriter"
@@ -29,7 +28,8 @@ func DatToMMDB(datPath, mmdbPath string) error {
 	// Create a new MMDB writer
 	writer, err := mmdbwriter.New(
 		mmdbwriter.Options{
-			DatabaseType: "GeoIP2-Country",
+			DatabaseType:            "GeoIP2-Country",
+			IncludeReservedNetworks: true,
 			Description: map[string]string{
 				"en": "GeoIP database converted from geoip.dat",
 			},
@@ -60,9 +60,6 @@ func DatToMMDB(datPath, mmdbPath string) error {
 			}
 
 			if err := writer.Insert(ipNet, record); err != nil {
-				if strings.Contains(err.Error(), "reserved network") {
-					continue
-				}
 				fmt.Printf("Warning: failed to insert CIDR %s: %v\n", ipNet.String(), err)
 			}
 		}

@@ -10,6 +10,14 @@ Convert V2Ray rule databases into formats usable by other clients and SDKs.
 * **geoip.dat → geoip.mmdb**
   Convert V2Ray IP list into MaxMind MMDB (compatible with GeoIP2 readers)
 
+## Build
+
+Requires Go 1.24.12 or newer.
+
+```bash
+go build -o forgerules ./cmd/forgerules
+```
+
 ## Usage
 
 ### Convert geosite
