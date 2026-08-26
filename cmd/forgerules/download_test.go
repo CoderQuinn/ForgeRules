@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,13 +19,13 @@ func TestDownloadFileWithClient(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	path := filepath.Join(t.TempDir(), "rules.dat")
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "rules.dat")
 	if err := downloadFileWithClient(server.Client(), server.URL, path); err != nil {
 		t.Fatalf("download file: %v", err)
 	}
 
-	// #nosec G304 -- path is created inside the test's temporary directory.
-	data, err := os.ReadFile(path)
+	data, err := fs.ReadFile(os.DirFS(tempDir), "rules.dat")
 	if err != nil {
 		t.Fatalf("read downloaded file: %v", err)
 	}
