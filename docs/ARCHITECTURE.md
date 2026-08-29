@@ -73,6 +73,12 @@ revision, verifies both checksum files, and requires every published file to be
 byte-identical. The release workflows publish the manifest and checksums beside
 the rule assets.
 
+`testdata/golden/geosite.json` freezes the byte-level GeoSite v1 contract. Its
+Go test generates the JSON from protobuf input and compares exact bytes. The
+same SHA-256-pinned fixture is loaded by ForgeRuleCore bundle tests, so the
+producer and evaluator share a real contract without creating a runtime or
+package dependency.
+
 The rollback pointer and cross-repository ForgeRuleCore golden acceptance remain
 separate delivery gates; this document does not claim those later gates are
 complete.

@@ -80,6 +80,7 @@ func DatToJSON(datPath, jsonPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
+	jsonData = append(jsonData, '\n')
 
 	// Write to file
 	if err := os.WriteFile(jsonPath, jsonData, 0644); err != nil {
