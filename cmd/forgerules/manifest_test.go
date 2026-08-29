@@ -104,7 +104,7 @@ func verifyChecksumFile(t *testing.T, directory string) {
 		if len(fields) != 2 {
 			t.Fatalf("invalid checksum line %q", line)
 		}
-		digest, _, err := digestFile(filepath.Join(directory, fields[1]))
+		digest, _, err := digestFile(directory, fields[1])
 		if err != nil {
 			t.Fatalf("digest %s: %v", fields[1], err)
 		}

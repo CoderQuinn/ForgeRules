@@ -72,7 +72,7 @@ func writeBuildMetadata(
 		return fmt.Errorf("Go version is empty")
 	}
 
-	lockFile, err := os.Open(sourceLockPath)
+	lockFile, err := os.DirFS(filepath.Dir(sourceLockPath)).Open(filepath.Base(sourceLockPath))
 	if err != nil {
 		return fmt.Errorf("open source lock for provenance: %w", err)
 	}
@@ -177,7 +177,7 @@ func artifactMetadata(
 	buildEpoch int64,
 	source lockedAsset,
 ) (artifactProvenance, error) {
-	digest, size, err := digestFile(filepath.Join(outputDirectory, filename))
+	digest, size, err := digestFile(outputDirectory, filename)
 	if err != nil {
 		return artifactProvenance{}, fmt.Errorf("inspect artifact %s: %w", filename, err)
 	}
@@ -191,8 +191,8 @@ func artifactMetadata(
 	}, nil
 }
 
-func digestFile(filePath string) (string, int64, error) {
-	file, err := os.Open(filePath)
+func digestFile(directory, filename string) (string, int64, error) {
+	file, err := os.DirFS(directory).Open(filename)
 	if err != nil {
 		return "", 0, err
 	}
