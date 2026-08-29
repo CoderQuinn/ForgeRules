@@ -34,6 +34,7 @@ func main() {
 	geositeOutput := flag.String("geosite-output", "geosite.json", "Output geosite.json file path")
 	geoipInput := flag.String("geoip-input", "", "Input geoip.dat file path")
 	geoipOutput := flag.String("geoip-output", "geoip.mmdb", "Output geoip.mmdb file path")
+	geoipBuildEpoch := flag.Int64("geoip-build-epoch", 0, "MMDB build timestamp as Unix epoch seconds; 0 uses conversion time")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "ForgeRules - Convert geosite.dat to JSON and geoip.dat to MMDB\n\n")
@@ -75,7 +76,11 @@ func main() {
 			if err := geosite.DatToJSON(geositeDat, geositeJSON); err != nil {
 				panic(err)
 			}
-			if err := geoip.DatToMMDB(geoipDat, geoipMMDB); err != nil {
+			if err := geoip.DatToMMDBWithOptions(
+				geoipDat,
+				geoipMMDB,
+				geoip.MMDBOptions{BuildEpoch: *geoipBuildEpoch},
+			); err != nil {
 				panic(err)
 			}
 		}
@@ -97,7 +102,11 @@ func main() {
 	// Convert geoip.dat to MMDB if input is provided
 	if *geoipInput != "" {
 		fmt.Printf("Converting %s to %s...\n", *geoipInput, *geoipOutput)
-		if err := geoip.DatToMMDB(*geoipInput, *geoipOutput); err != nil {
+		if err := geoip.DatToMMDBWithOptions(
+			*geoipInput,
+			*geoipOutput,
+			geoip.MMDBOptions{BuildEpoch: *geoipBuildEpoch},
+		); err != nil {
 			fmt.Fprintf(os.Stderr, "Error converting geoip: %v\n", err)
 			os.Exit(1)
 		}

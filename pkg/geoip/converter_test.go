@@ -1,6 +1,8 @@
 package geoip
 
 import (
+	"bytes"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -10,6 +12,73 @@ import (
 	maxminddb "github.com/oschwald/maxminddb-golang/v2"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestDatToMMDBWithBuildEpochIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	input := &pb.GeoIPList{Entry: []*pb.GeoIP{
+		{
+			CountryCode: "US",
+			Cidr:        []*pb.CIDR{testCIDR("8.8.8.0/24")},
+		},
+	}}
+	data, err := proto.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	datPath := filepath.Join(tempDir, "geoip.dat")
+	if err := os.WriteFile(datPath, data, 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	const buildEpoch int64 = 1_700_000_000
+	options := MMDBOptions{BuildEpoch: buildEpoch}
+	firstPath := filepath.Join(tempDir, "first.mmdb")
+	secondPath := filepath.Join(tempDir, "second.mmdb")
+	if err := DatToMMDBWithOptions(datPath, firstPath, options); err != nil {
+		t.Fatalf("first conversion: %v", err)
+	}
+	if err := DatToMMDBWithOptions(datPath, secondPath, options); err != nil {
+		t.Fatalf("second conversion: %v", err)
+	}
+
+	directory := os.DirFS(tempDir)
+	first, err := fs.ReadFile(directory, "first.mmdb")
+	if err != nil {
+		t.Fatalf("read first output: %v", err)
+	}
+	second, err := fs.ReadFile(directory, "second.mmdb")
+	if err != nil {
+		t.Fatalf("read second output: %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("fixed build epoch produced different MMDB bytes")
+	}
+
+	database, err := maxminddb.Open(firstPath)
+	if err != nil {
+		t.Fatalf("open output: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Errorf("close output: %v", err)
+		}
+	})
+	if database.Metadata.BuildEpoch != uint(buildEpoch) {
+		t.Errorf("build epoch = %d, want %d", database.Metadata.BuildEpoch, buildEpoch)
+	}
+}
+
+func TestDatToMMDBRejectsNegativeBuildEpoch(t *testing.T) {
+	t.Parallel()
+
+	err := DatToMMDBWithOptions("unused.dat", "unused.mmdb", MMDBOptions{BuildEpoch: -1})
+	if err == nil {
+		t.Fatal("expected negative build epoch to fail")
+	}
+}
 
 func TestDatToMMDBIncludesReservedNetworks(t *testing.T) {
 	t.Parallel()

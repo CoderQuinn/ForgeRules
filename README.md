@@ -32,6 +32,16 @@ go build -o forgerules ./cmd/forgerules
 ./forgerules -geoip-input geoip.dat
 ```
 
+To make MMDB output reproducible, provide a fixed Unix build timestamp:
+
+```bash
+./forgerules -geoip-input geoip.dat -geoip-build-epoch 1700000000
+```
+
+With identical input bytes, converter version, and build epoch, repeated MMDB
+conversions produce identical bytes. The default value `0` preserves the
+existing behavior and records the conversion time.
+
 ### Convert both
 
 ```bash
