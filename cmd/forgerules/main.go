@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/CoderQuinn/ForgeRules/pkg/geoip"
 	"github.com/CoderQuinn/ForgeRules/pkg/geosite"
@@ -17,6 +18,7 @@ func main() {
 	geoipOutput := flag.String("geoip-output", "geoip.mmdb", "Output geoip.mmdb file path")
 	geoipBuildEpoch := flag.Int64("geoip-build-epoch", 0, "MMDB build timestamp as Unix epoch seconds; 0 uses conversion time")
 	sourcesLockPath := flag.String("sources-lock", "rules.sources.lock.json", "Pinned source lock used when no explicit inputs are provided")
+	converterRevision := flag.String("converter-revision", "", "ForgeRules commit SHA recorded in locked-build provenance")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "ForgeRules - Convert geosite.dat to JSON and geoip.dat to MMDB\n\n")
@@ -39,6 +41,10 @@ func main() {
 	if *geositeInput == "" && *geoipInput == "" {
 		if *geoipBuildEpoch != 0 {
 			fmt.Fprintln(os.Stderr, "-geoip-build-epoch cannot override a pinned source lock")
+			os.Exit(2)
+		}
+		if !revisionPattern.MatchString(*converterRevision) {
+			fmt.Fprintln(os.Stderr, "-converter-revision must be a lowercase 40-character commit SHA")
 			os.Exit(2)
 		}
 		lock, err := loadSourceLock(*sourcesLockPath)
@@ -84,6 +90,16 @@ func main() {
 			); err != nil {
 				panic(err)
 			}
+		}
+		if err := writeBuildMetadata(
+			".",
+			*sourcesLockPath,
+			lock,
+			*converterRevision,
+			runtime.Version(),
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing build metadata: %v\n", err)
+			os.Exit(1)
 		}
 
 		fmt.Println("Upstream conversion completed!")

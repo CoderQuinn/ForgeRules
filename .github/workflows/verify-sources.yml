@@ -42,12 +42,23 @@ jobs:
 
       - name: Convert pinned sources
         run: |
-          output="${RUNNER_TEMP}/pinned-output"
-          mkdir -p "${output}"
-          cd "${output}"
-          "${RUNNER_TEMP}/forgerules" -sources-lock "${GITHUB_WORKSPACE}/rules.sources.lock.json"
+          for pass in first second; do
+            output="${RUNNER_TEMP}/pinned-${pass}"
+            mkdir -p "${output}"
+            cd "${output}"
+            "${RUNNER_TEMP}/forgerules" \
+              -sources-lock "${GITHUB_WORKSPACE}/rules.sources.lock.json" \
+              -converter-revision "${GITHUB_SHA}"
+            sha256sum --check SHA256SUMS
+          done
+
+          cd "${RUNNER_TEMP}"
+          while read -r _ filename; do
+            cmp "pinned-first/${filename}" "pinned-second/${filename}"
+          done < "pinned-first/SHA256SUMS"
+          cmp pinned-first/SHA256SUMS pinned-second/SHA256SUMS
 
       - name: Publish output digests
         run: |
-          cd "${RUNNER_TEMP}/pinned-output"
-          shasum -a 256 *_geosite.json *_geoip.mmdb | tee -a "${GITHUB_STEP_SUMMARY}"
+          cd "${RUNNER_TEMP}/pinned-first"
+          cat SHA256SUMS | tee -a "${GITHUB_STEP_SUMMARY}"

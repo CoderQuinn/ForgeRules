@@ -60,6 +60,19 @@ Given identical locked input bytes, converter revision, Go toolchain, and GeoIP
 build epoch, the output bytes are deterministic. The repository pins the Go
 toolchain in `go.mod`, and CI selects it through `go-version-file`.
 
-The release manifest, published checksums, rollback pointer, and cross-repo
-ForgeRuleCore golden acceptance are separate delivery gates; this document does
-not claim those later gates are complete.
+Pinned builds also emit:
+
+- `rules-manifest.json`, which records the manifest schema, converter repository
+  and revision, Go version, source-lock digest and contents, and every output's
+  format, size, digest, build epoch, and input provenance;
+- `SHA256SUMS`, which covers the source lock, manifest, and all generated rule
+  assets.
+
+The pinned-source CI gate performs the complete conversion twice at the same
+revision, verifies both checksum files, and requires every published file to be
+byte-identical. The release workflows publish the manifest and checksums beside
+the rule assets.
+
+The rollback pointer and cross-repository ForgeRuleCore golden acceptance remain
+separate delivery gates; this document does not claim those later gates are
+complete.
