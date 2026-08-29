@@ -17,15 +17,30 @@ func TestDatToMMDBIncludesReservedNetworks(t *testing.T) {
 	input := &pb.GeoIPList{Entry: []*pb.GeoIP{
 		{
 			CountryCode: "PRIVATE",
+			Cidr:        []*pb.CIDR{testCIDR("10.0.0.0/8")},
+		},
+		{
+			CountryCode: "LOOPBACK",
+			Cidr:        []*pb.CIDR{testCIDR("127.0.0.0/8")},
+		},
+		{
+			CountryCode: "LINKLOCAL",
+			Cidr:        []*pb.CIDR{testCIDR("169.254.0.0/16")},
+		},
+		{
+			CountryCode: "DOCUMENTATION",
 			Cidr: []*pb.CIDR{
-				{Ip: []byte{10, 0, 0, 0}, Prefix: 8},
+				testCIDR("192.0.2.0/24"),
+				testCIDR("2001:db8::/32"),
 			},
 		},
 		{
+			CountryCode: "ULA",
+			Cidr:        []*pb.CIDR{testCIDR("fc00::/7")},
+		},
+		{
 			CountryCode: "US",
-			Cidr: []*pb.CIDR{
-				{Ip: []byte{8, 0, 0, 0}, Prefix: 8},
-			},
+			Cidr:        []*pb.CIDR{testCIDR("8.0.0.0/8")},
 		},
 	}}
 
@@ -56,7 +71,20 @@ func TestDatToMMDBIncludesReservedNetworks(t *testing.T) {
 	})
 
 	assertCountryCode(t, database, "10.1.2.3", "PRIVATE")
+	assertCountryCode(t, database, "127.0.0.1", "LOOPBACK")
+	assertCountryCode(t, database, "169.254.10.20", "LINKLOCAL")
+	assertCountryCode(t, database, "192.0.2.42", "DOCUMENTATION")
+	assertCountryCode(t, database, "2001:db8::42", "DOCUMENTATION")
+	assertCountryCode(t, database, "fd00::1", "ULA")
 	assertCountryCode(t, database, "8.8.8.8", "US")
+}
+
+func testCIDR(value string) *pb.CIDR {
+	prefix := netip.MustParsePrefix(value)
+	return &pb.CIDR{
+		Ip:     prefix.Addr().AsSlice(),
+		Prefix: uint32(prefix.Bits()),
+	}
 }
 
 func assertCountryCode(t *testing.T, database *maxminddb.Reader, ip, expected string) {
