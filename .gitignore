@@ -39,4 +39,6 @@ go.work.sum
 *.dat
 *.json
 !rules.sources.lock.json
+rules-manifest.json
+SHA256SUMS
 *.mmdb

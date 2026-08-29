@@ -55,6 +55,11 @@ geosite.json
 geoip.mmdb
 ```
 
+Pinned automatic builds also emit `rules-manifest.json` and `SHA256SUMS`. The
+manifest records the converter revision and toolchain, the complete locked input
+provenance, and each output's format, size, and SHA-256 digest. CI runs the
+pinned build twice and requires byte-identical files.
+
 ## Generated Artifacts (Latest Release)
 
 ### GeoSite(JSON), GeoIP (MMDB)
@@ -68,6 +73,11 @@ https://github.com/CoderQuinn/ForgeRules/releases/latest/download/official_geoip
 
 https://github.com/CoderQuinn/ForgeRules/releases/latest/download/loyalsoldier_geosite.json
 https://github.com/CoderQuinn/ForgeRules/releases/latest/download/loyalsoldier_geoip.mmdb
+
+**Provenance and verification**
+
+https://github.com/CoderQuinn/ForgeRules/releases/latest/download/rules-manifest.json
+https://github.com/CoderQuinn/ForgeRules/releases/latest/download/SHA256SUMS
 
 ## Data Sources
 
