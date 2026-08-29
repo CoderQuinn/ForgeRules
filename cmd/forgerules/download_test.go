@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -17,9 +18,7 @@ func TestDownloadVerifiedFileWithClient(t *testing.T) {
 	t.Parallel()
 
 	contents := []byte("rules")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(contents)
-	}))
+	server := httptest.NewServer(binaryFixtureHandler(contents))
 	t.Cleanup(server.Close)
 
 	tempDir := t.TempDir()
@@ -90,9 +89,7 @@ func TestDownloadVerifiedFileWithClientPreservesTargetOnDigestMismatch(t *testin
 	t.Parallel()
 
 	contents := []byte("rules")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(contents)
-	}))
+	server := httptest.NewServer(binaryFixtureHandler(contents))
 	t.Cleanup(server.Close)
 
 	tempDir := t.TempDir()
@@ -119,4 +116,10 @@ func TestDownloadVerifiedFileWithClientPreservesTargetOnDigestMismatch(t *testin
 func testSHA256(contents []byte) string {
 	digest := sha256.Sum256(contents)
 	return hex.EncodeToString(digest[:])
+}
+
+func binaryFixtureHandler(contents []byte) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		http.ServeContent(w, request, "rules.dat", time.Unix(0, 0), bytes.NewReader(contents))
+	})
 }
