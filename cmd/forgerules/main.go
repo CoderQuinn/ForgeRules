@@ -9,25 +9,6 @@ import (
 	"github.com/CoderQuinn/ForgeRules/pkg/geosite"
 )
 
-type Source struct {
-	Name       string
-	GeoSiteURL string
-	GeoIPURL   string
-}
-
-var defaultSources = []Source{
-	{
-		Name:       "official",
-		GeoSiteURL: "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
-		GeoIPURL:   "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
-	},
-	{
-		Name:       "loyalsoldier",
-		GeoSiteURL: "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
-		GeoIPURL:   "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
-	},
-}
-
 func main() {
 	// Define command-line flags
 	geositeInput := flag.String("geosite-input", "", "Input geosite.dat file path")
@@ -35,6 +16,7 @@ func main() {
 	geoipInput := flag.String("geoip-input", "", "Input geoip.dat file path")
 	geoipOutput := flag.String("geoip-output", "geoip.mmdb", "Output geoip.mmdb file path")
 	geoipBuildEpoch := flag.Int64("geoip-build-epoch", 0, "MMDB build timestamp as Unix epoch seconds; 0 uses conversion time")
+	sourcesLockPath := flag.String("sources-lock", "rules.sources.lock.json", "Pinned source lock used when no explicit inputs are provided")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "ForgeRules - Convert geosite.dat to JSON and geoip.dat to MMDB\n\n")
@@ -53,20 +35,39 @@ func main() {
 
 	flag.Parse()
 
-	// Auto mode: no input provided → download upstream rules
+	// Auto mode: no input provided → download only pinned upstream rules.
 	if *geositeInput == "" && *geoipInput == "" {
-		fmt.Println("No input specified. Using upstream sources...")
+		if *geoipBuildEpoch != 0 {
+			fmt.Fprintln(os.Stderr, "-geoip-build-epoch cannot override a pinned source lock")
+			os.Exit(2)
+		}
+		lock, err := loadSourceLock(*sourcesLockPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading source lock: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("No input specified. Using pinned source lock %s...\n", *sourcesLockPath)
 
-		for _, src := range defaultSources {
+		for _, src := range lock.Sources {
 			fmt.Println("Processing:", src.Name)
 
 			geositeDat := src.Name + "_geosite.dat"
 			geoipDat := src.Name + "_geoip.dat"
 
-			if err := downloadFile(src.GeoSiteURL, geositeDat); err != nil {
+			if err := downloadVerifiedFile(
+				src.GeoSite.URL,
+				geositeDat,
+				src.GeoSite.SHA256,
+				src.GeoSite.Size,
+			); err != nil {
 				panic(err)
 			}
-			if err := downloadFile(src.GeoIPURL, geoipDat); err != nil {
+			if err := downloadVerifiedFile(
+				src.GeoIP.URL,
+				geoipDat,
+				src.GeoIP.SHA256,
+				src.GeoIP.Size,
+			); err != nil {
 				panic(err)
 			}
 
@@ -79,7 +80,7 @@ func main() {
 			if err := geoip.DatToMMDBWithOptions(
 				geoipDat,
 				geoipMMDB,
-				geoip.MMDBOptions{BuildEpoch: *geoipBuildEpoch},
+				geoip.MMDBOptions{BuildEpoch: src.GeoIP.BuildEpoch},
 			); err != nil {
 				panic(err)
 			}

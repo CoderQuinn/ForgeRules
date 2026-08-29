@@ -38,4 +38,5 @@ go.work.sum
 /testdata/
 *.dat
 *.json
+!rules.sources.lock.json
 *.mmdb
