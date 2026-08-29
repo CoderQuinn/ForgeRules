@@ -85,6 +85,12 @@ Community enhanced:
 This project is intended as a preprocessing step for rule engines
 (e.g. DNS routing / traffic classification).
 
+For QuantumLink 0.8.0, ForgeRules is an offline production asset builder, not a
+runtime dependency. Automatic conversion reads the reviewed
+`rules.sources.lock.json`; it never follows mutable `latest` URLs. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the source and output
+contracts.
+
 ## License
 
 Apache 2.0

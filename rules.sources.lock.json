@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "name": "official",
+      "geosite": {
+        "repository": "v2fly/domain-list-community",
+        "releaseTag": "20260827152101",
+        "revision": "06111d32139e3497a20fded97ca2b4424ad87e60",
+        "publishedAt": "2026-08-27T15:21:07Z",
+        "url": "https://github.com/v2fly/domain-list-community/releases/download/20260827152101/dlc.dat",
+        "sha256": "ba1adf51d4d724abbc157c53234a02bda00c94cdb8211709682e51a6855520b7",
+        "size": 2283258
+      },
+      "geoip": {
+        "repository": "v2fly/geoip",
+        "releaseTag": "202608050239",
+        "revision": "171cde937eea24a9a4a81349cc55109167e594cc",
+        "publishedAt": "2026-08-05T02:40:18Z",
+        "url": "https://github.com/v2fly/geoip/releases/download/202608050239/geoip.dat",
+        "sha256": "c67bd077eb102cec74fab759b73d17f99275f56af10a87c14d9fd983508f5ce1",
+        "size": 23080744,
+        "buildEpoch": 1785897618
+      }
+    },
+    {
+      "name": "loyalsoldier",
+      "geosite": {
+        "repository": "Loyalsoldier/v2ray-rules-dat",
+        "releaseTag": "202608290326",
+        "revision": "5c20d2eb5a65b171816949010ede67a27326cbe6",
+        "publishedAt": "2026-08-29T03:27:15Z",
+        "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202608290326/geosite.dat",
+        "sha256": "4b60c1ba2056def3956e70017e04f2041198019223d2b9ca394e3b93b7460976",
+        "size": 11005730
+      },
+      "geoip": {
+        "repository": "Loyalsoldier/v2ray-rules-dat",
+        "releaseTag": "202608290326",
+        "revision": "5c20d2eb5a65b171816949010ede67a27326cbe6",
+        "publishedAt": "2026-08-29T03:27:15Z",
+        "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202608290326/geoip.dat",
+        "sha256": "0d5d2ba0c5a5c58027fd1347a6afd57c9470799b6bb3cbc274fd4657ed8de382",
+        "size": 17224069,
+        "buildEpoch": 1787974035
+      }
+    }
+  ]
+}

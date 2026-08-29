@@ -1,0 +1,53 @@
+name: Verify Pinned Sources
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/verify-sources.yml"
+      - "cmd/forgerules/**"
+      - "go.mod"
+      - "go.sum"
+      - "pkg/**"
+      - "proto/**"
+      - "rules.sources.lock.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-sources-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pinned-source-gate:
+    name: Pinned source conversion gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build converter
+        run: go build -o "${RUNNER_TEMP}/forgerules" ./cmd/forgerules
+
+      - name: Convert pinned sources
+        run: |
+          output="${RUNNER_TEMP}/pinned-output"
+          mkdir -p "${output}"
+          cd "${output}"
+          "${RUNNER_TEMP}/forgerules" -sources-lock "${GITHUB_WORKSPACE}/rules.sources.lock.json"
+
+      - name: Publish output digests
+        run: |
+          cd "${RUNNER_TEMP}/pinned-output"
+          shasum -a 256 *_geosite.json *_geoip.mmdb | tee -a "${GITHUB_STEP_SUMMARY}"

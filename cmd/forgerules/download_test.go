@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -11,17 +14,18 @@ import (
 	"time"
 )
 
-func TestDownloadFileWithClient(t *testing.T) {
+func TestDownloadVerifiedFileWithClient(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("rules"))
-	}))
+	contents := []byte("rules")
+	server := httptest.NewServer(binaryFixtureHandler(contents))
 	t.Cleanup(server.Close)
 
 	tempDir := t.TempDir()
 	path := filepath.Join(tempDir, "rules.dat")
-	if err := downloadFileWithClient(server.Client(), server.URL, path); err != nil {
+	if err := downloadVerifiedFileWithClient(
+		server.Client(), server.URL, path, testSHA256(contents), int64(len(contents)),
+	); err != nil {
 		t.Fatalf("download file: %v", err)
 	}
 
@@ -29,12 +33,12 @@ func TestDownloadFileWithClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read downloaded file: %v", err)
 	}
-	if string(data) != "rules" {
-		t.Errorf("downloaded data = %q, want %q", data, "rules")
+	if string(data) != string(contents) {
+		t.Errorf("downloaded data = %q, want %q", data, contents)
 	}
 }
 
-func TestDownloadFileWithClientRejectsNonOKResponse(t *testing.T) {
+func TestDownloadVerifiedFileWithClientRejectsNonOKResponse(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -43,7 +47,9 @@ func TestDownloadFileWithClientRejectsNonOKResponse(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	path := filepath.Join(t.TempDir(), "rules.dat")
-	err := downloadFileWithClient(server.Client(), server.URL, path)
+	err := downloadVerifiedFileWithClient(
+		server.Client(), server.URL, path, testSHA256([]byte("rules")), 5,
+	)
 	if err == nil {
 		t.Fatal("expected non-OK response to fail")
 	}
@@ -52,7 +58,7 @@ func TestDownloadFileWithClientRejectsNonOKResponse(t *testing.T) {
 	}
 }
 
-func TestDownloadFileWithClientTimesOut(t *testing.T) {
+func TestDownloadVerifiedFileWithClientTimesOut(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
@@ -65,7 +71,9 @@ func TestDownloadFileWithClientTimesOut(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.dat")
 
 	start := time.Now()
-	err := downloadFileWithClient(client, server.URL, path)
+	err := downloadVerifiedFileWithClient(
+		client, server.URL, path, testSHA256([]byte("rules")), 5,
+	)
 	if err == nil {
 		t.Fatal("expected timed-out request to fail")
 	}
@@ -75,4 +83,43 @@ func TestDownloadFileWithClientTimesOut(t *testing.T) {
 	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("download target should not exist, stat error = %v", statErr)
 	}
+}
+
+func TestDownloadVerifiedFileWithClientPreservesTargetOnDigestMismatch(t *testing.T) {
+	t.Parallel()
+
+	contents := []byte("rules")
+	server := httptest.NewServer(binaryFixtureHandler(contents))
+	t.Cleanup(server.Close)
+
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "rules.dat")
+	if err := os.WriteFile(path, []byte("last-known-good"), 0o600); err != nil {
+		t.Fatalf("write existing target: %v", err)
+	}
+	err := downloadVerifiedFileWithClient(
+		server.Client(), server.URL, path, testSHA256([]byte("other")), int64(len(contents)),
+	)
+	if err == nil {
+		t.Fatal("expected digest mismatch to fail")
+	}
+
+	data, readErr := fs.ReadFile(os.DirFS(tempDir), "rules.dat")
+	if readErr != nil {
+		t.Fatalf("read preserved target: %v", readErr)
+	}
+	if string(data) != "last-known-good" {
+		t.Errorf("preserved target = %q, want %q", data, "last-known-good")
+	}
+}
+
+func testSHA256(contents []byte) string {
+	digest := sha256.Sum256(contents)
+	return hex.EncodeToString(digest[:])
+}
+
+func binaryFixtureHandler(contents []byte) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		http.ServeContent(w, request, "rules.dat", time.Unix(0, 0), bytes.NewReader(contents))
+	})
 }
