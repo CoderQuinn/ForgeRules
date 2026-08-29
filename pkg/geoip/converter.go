@@ -11,8 +11,25 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// MMDBOptions controls metadata that affects generated MMDB bytes.
+type MMDBOptions struct {
+	// BuildEpoch is written to MMDB metadata as Unix epoch seconds. Zero keeps
+	// the mmdbwriter default of using the conversion time.
+	BuildEpoch int64
+}
+
 // DatToMMDB converts a geoip.dat file to MMDB format
 func DatToMMDB(datPath, mmdbPath string) error {
+	return DatToMMDBWithOptions(datPath, mmdbPath, MMDBOptions{})
+}
+
+// DatToMMDBWithOptions converts a geoip.dat file to MMDB format with explicit
+// metadata options. A fixed BuildEpoch makes repeated conversions byte-stable.
+func DatToMMDBWithOptions(datPath, mmdbPath string, options MMDBOptions) error {
+	if options.BuildEpoch < 0 {
+		return fmt.Errorf("build epoch must not be negative")
+	}
+
 	// Read the .dat file
 	data, err := os.ReadFile(datPath)
 	if err != nil {
@@ -28,6 +45,7 @@ func DatToMMDB(datPath, mmdbPath string) error {
 	// Create a new MMDB writer
 	writer, err := mmdbwriter.New(
 		mmdbwriter.Options{
+			BuildEpoch:              options.BuildEpoch,
 			DatabaseType:            "GeoIP2-Country",
 			IncludeReservedNetworks: true,
 			Description: map[string]string{
