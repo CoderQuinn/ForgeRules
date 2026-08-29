@@ -42,3 +42,8 @@ go.work.sum
 rules-manifest.json
 SHA256SUMS
 *.mmdb
+
+!/testdata/
+!/testdata/golden/
+!/testdata/golden/README.md
+!/testdata/golden/geosite.json
