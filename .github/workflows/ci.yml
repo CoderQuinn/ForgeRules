@@ -28,14 +28,19 @@ jobs:
       - name: Test immutable release-tag guard
         run: ./Scripts/test-release-tag-guard.sh
 
+      - name: Test release publication ordering and verification
+        run: |
+          ./Scripts/test-build-rules-workflow.sh
+          ./Scripts/test-verify-release-assets.sh
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Test converter
-        run: go test ./...
+      - name: Test converter and enforce first-party coverage
+        run: ./Scripts/check-go-coverage.sh
 
       - name: Test converter with race detector
         run: go test -race ./...

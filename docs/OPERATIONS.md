@@ -15,6 +15,9 @@ receipt, and rollback.
   rollback identifier.
 - A dated release tag is write-once. Release workflows fail if that tag already
   exists; they never replace its assets.
+- The workflow creates and verifies the immutable dated release before it
+  replaces `latest`. Verification downloads the published asset set, compares
+  every byte with the build output, and validates `SHA256SUMS`.
 - Every downloaded file is verified against `SHA256SUMS`. The manifest's
   converter revision, source-lock digest, selected bundle, sizes, and digests
   must agree with the downloaded files before runtime validation begins.

@@ -41,8 +41,8 @@ jobs:
       - name: Build converter
         run: go build -o forgerules ./cmd/forgerules
 
-      - name: Test converter
-        run: go test ./...
+      - name: Test converter and enforce first-party coverage
+        run: ./Scripts/check-go-coverage.sh
 
       - name: Run converter
         run: |

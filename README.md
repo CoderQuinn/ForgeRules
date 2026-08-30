@@ -18,6 +18,18 @@ Requires Go 1.24.12 or newer.
 go build -o forgerules ./cmd/forgerules
 ```
 
+## Test and coverage gate
+
+```bash
+./Scripts/check-go-coverage.sh
+```
+
+The gate requires at least 95% line coverage across every handwritten Go
+production package in `cmd/forgerules` and `pkg`. It still compiles and tests
+`./...`; only `proto/*.pb.go` is outside the measured roots because those files
+are generated from the checked-in `.proto` contracts. The gate does not filter
+individual production files or remove uncovered lines from the profile.
+
 ## Usage
 
 ### Convert geosite

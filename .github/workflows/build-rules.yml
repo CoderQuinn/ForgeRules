@@ -30,8 +30,8 @@ jobs:
       - name: Build converter
         run: go build -o forgerules ./cmd/forgerules
 
-      - name: Test converter
-        run: go test ./...
+      - name: Test converter and enforce first-party coverage
+        run: ./Scripts/check-go-coverage.sh
 
       - name: Run converter
         run: |
@@ -46,6 +46,28 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: ./Scripts/check-release-tag-available.sh origin "${RELEASE_TAG}"
+
+      - name: Create dated release
+        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          files: |
+            official_geosite.json
+            official_geoip.mmdb
+            loyalsoldier_geosite.json
+            loyalsoldier_geoip.mmdb
+            rules.sources.lock.json
+            rules-manifest.json
+            SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify dated release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_TAG}" .
 
       - name: Delete previous latest release
         uses: dev-drprasad/delete-tag-and-release@82600feb9527126eca69833f07bafe53279bd9b4 # v1.1
@@ -71,18 +93,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create dated release
-        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Release ${{ steps.tag.outputs.tag }}
-          files: |
-            official_geosite.json
-            official_geoip.mmdb
-            loyalsoldier_geosite.json
-            loyalsoldier_geoip.mmdb
-            rules.sources.lock.json
-            rules-manifest.json
-            SHA256SUMS
+      - name: Verify latest release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" latest .

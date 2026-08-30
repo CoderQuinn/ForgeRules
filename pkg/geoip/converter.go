@@ -2,8 +2,10 @@ package geoip
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 
 	pb "github.com/CoderQuinn/ForgeRules/proto"
 	"github.com/maxmind/mmdbwriter"
@@ -18,6 +20,13 @@ type MMDBOptions struct {
 	BuildEpoch int64
 }
 
+type mmdbTree interface {
+	Insert(*net.IPNet, mmdbtype.DataType) error
+	WriteTo(io.Writer) (int64, error)
+}
+
+type mmdbTreeFactory func(mmdbwriter.Options) (mmdbTree, error)
+
 // DatToMMDB converts a geoip.dat file to MMDB format
 func DatToMMDB(datPath, mmdbPath string) error {
 	return DatToMMDBWithOptions(datPath, mmdbPath, MMDBOptions{})
@@ -26,6 +35,16 @@ func DatToMMDB(datPath, mmdbPath string) error {
 // DatToMMDBWithOptions converts a geoip.dat file to MMDB format with explicit
 // metadata options. A fixed BuildEpoch makes repeated conversions byte-stable.
 func DatToMMDBWithOptions(datPath, mmdbPath string, options MMDBOptions) error {
+	return datToMMDBWithOptions(datPath, mmdbPath, options, func(options mmdbwriter.Options) (mmdbTree, error) {
+		return mmdbwriter.New(options)
+	})
+}
+
+func datToMMDBWithOptions(
+	datPath, mmdbPath string,
+	options MMDBOptions,
+	newTree mmdbTreeFactory,
+) error {
 	if options.BuildEpoch < 0 {
 		return fmt.Errorf("build epoch must not be negative")
 	}
@@ -43,7 +62,7 @@ func DatToMMDBWithOptions(datPath, mmdbPath string, options MMDBOptions) error {
 	}
 
 	// Create a new MMDB writer
-	writer, err := mmdbwriter.New(
+	writer, err := newTree(
 		mmdbwriter.Options{
 			BuildEpoch:              options.BuildEpoch,
 			DatabaseType:            "GeoIP2-Country",
@@ -59,7 +78,10 @@ func DatToMMDBWithOptions(datPath, mmdbPath string, options MMDBOptions) error {
 	}
 
 	// Process each GeoIP entry
-	for _, entry := range geoIPList.Entry {
+	for entryIndex, entry := range geoIPList.Entry {
+		if entry == nil {
+			return fmt.Errorf("geoip entry %d is nil", entryIndex)
+		}
 		countryCode := entry.CountryCode
 
 		// Create the record to insert
@@ -70,37 +92,76 @@ func DatToMMDBWithOptions(datPath, mmdbPath string, options MMDBOptions) error {
 		}
 
 		// Insert each CIDR block
-		for _, cidr := range entry.Cidr {
+		for cidrIndex, cidr := range entry.Cidr {
 			ipNet, err := parseCIDR(cidr)
 			if err != nil {
-				fmt.Printf("Warning: skipping invalid CIDR: %v\n", err)
-				continue
+				return fmt.Errorf(
+					"geoip entry %d (%q) CIDR %d: %w",
+					entryIndex,
+					countryCode,
+					cidrIndex,
+					err,
+				)
 			}
 
 			if err := writer.Insert(ipNet, record); err != nil {
-				fmt.Printf("Warning: failed to insert CIDR %s: %v\n", ipNet.String(), err)
+				return fmt.Errorf(
+					"insert geoip entry %d (%q) CIDR %d (%s): %w",
+					entryIndex,
+					countryCode,
+					cidrIndex,
+					ipNet.String(),
+					err,
+				)
 			}
 		}
 	}
 
-	// Write the MMDB file
-	file, err := os.Create(mmdbPath)
-	if err != nil {
-		return fmt.Errorf("failed to create MMDB file: %w", err)
-	}
-	defer file.Close()
-
-	if _, err := writer.WriteTo(file); err != nil {
-		return fmt.Errorf("failed to write MMDB data: %w", err)
+	if err := writeMMDBAtomically(mmdbPath, writer); err != nil {
+		return fmt.Errorf("write MMDB output: %w", err)
 	}
 
 	return nil
 }
 
+func writeMMDBAtomically(mmdbPath string, writer mmdbTree) error {
+	temp, err := os.CreateTemp(filepath.Dir(mmdbPath), "."+filepath.Base(mmdbPath)+".*")
+	if err != nil {
+		return fmt.Errorf("create temporary MMDB file: %w", err)
+	}
+	tempPath := temp.Name()
+	keepTemp := false
+	defer func() {
+		_ = temp.Close()
+		if !keepTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if _, err := writer.WriteTo(temp); err != nil {
+		return fmt.Errorf("write temporary MMDB data: %w", err)
+	}
+	if err := temp.Chmod(0o644); err != nil {
+		return fmt.Errorf("set temporary MMDB permissions: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close temporary MMDB file: %w", err)
+	}
+	if err := os.Rename(tempPath, mmdbPath); err != nil {
+		return fmt.Errorf("replace MMDB output: %w", err)
+	}
+
+	keepTemp = true
+	return nil
+}
+
 // parseCIDR converts a pb.CIDR to a net.IPNet
 func parseCIDR(cidr *pb.CIDR) (*net.IPNet, error) {
+	if cidr == nil {
+		return nil, fmt.Errorf("CIDR is nil")
+	}
 	ip := net.IP(cidr.Ip)
-	if ip == nil {
+	if ip.To4() == nil && ip.To16() == nil {
 		return nil, fmt.Errorf("invalid IP address")
 	}
 
