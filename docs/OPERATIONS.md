@@ -19,9 +19,24 @@ receipt, and rollback.
   never discovers or updates a draft by tag. It records that exact release ID,
   verifies the commit-bound draft and every remotely uploaded byte, and only
   then publishes it. After publication it requires the tag, release ID, and
-  peeled commit to agree before replacing `latest` through the same
-  draft-verify-publish sequence. Verification validates `SHA256SUMS` as well as
-  byte equality with the build output.
+  peeled commit to agree.
+- `latest` is a separate fresh release, not a retagged dated release. The
+  workflow creates a unique `latest-staging-RUN_ID-RUN_ATTEMPT` draft, uploads
+  and byte-verifies all of its assets while the old `latest` remains available,
+  and records its exact ID. Only then may it snapshot and recheck the old
+  published `latest` release plus raw tag-ref object, delete that pair, retag
+  the same verified staging ID to `latest` while it is still a draft, publish
+  it with `make_latest=true`, and verify exact ID, latest pointer, exact tag
+  ref, peeled commit, checksums, and remote bytes. A failure never exposes an
+  unverified or partial `latest`, although `latest` can be temporarily absent
+  after the old verified pair has been removed.
+- Failure cleanup owns only the fresh REST response ID. A draft cleanup deletes
+  that exact ID and never guesses ownership of a tag from a matching commit.
+  Cleanup of an ambiguously published fresh release first withdraws the exact
+  release ID, then deletes a tag only when the pre-delete release-by-tag ID and
+  raw ref fingerprint still identify that same publication and the ref still
+  peels to the expected commit. Mismatched or replaced refs are preserved for
+  manual inspection.
 - Every downloaded file is verified against `SHA256SUMS`. The manifest's
   converter revision, source-lock digest, selected bundle, sizes, and digests
   must agree with the downloaded files before runtime validation begins.
@@ -32,6 +47,40 @@ receipt, and rollback.
   disk. Cleanup may remove older inactive bundles only after a newer bundle has
   been accepted and the previous bundle is still intact.
 - Update failure is observable and must not silently select Direct routing.
+
+## Repairing only the mutable latest alias
+
+If a full run published and verified today's immutable dated release but failed
+while replacing `latest`, do not rerun the full path: its write-once
+`rules-YYYYMMDD` check must fail on the already-published tag. Instead, dispatch
+**Build Rules** from a branch or tag that resolves to the intended commit and
+select `release_scope` = `latest-only`:
+
+```bash
+gh workflow run build-rules.yml \
+  --repo CoderQuinn/ForgeRules \
+  --ref <branch-or-tag-at-intended-commit> \
+  -f release_scope=latest-only
+```
+
+The recovery run still checks out that ref, builds, tests, converts, creates a
+new unique staging draft, and verifies its remote bytes. It skips every dated
+tag/create/publish/cleanup step and never reuses a failed staging draft by tag.
+Confirm the run's `GITHUB_SHA` is the intended converter revision before using
+the recovered alias.
+
+Old-`latest` deletion is deliberately fail closed. The script accepts only
+complete absence or one published, mutable release paired with an exact
+`refs/tags/latest`; release-only, ref-only, hidden draft, immutable, and changed
+identity states require manual repair. It snapshots and rechecks the release
+fingerprint and raw ref object before mutation. GitHub's REST API does not offer
+an atomic compare-and-delete for these objects, so an external writer can still
+race between the last recheck and DELETE. The shared workflow concurrency group
+serializes ForgeRules workflows, but operators should also restrict tag writes
+and avoid other automation that mutates `latest`. If repository immutable
+release policy prevents deleting and reusing `latest`, this mutable Release
+alias workflow is unsupported; retain dated releases and choose a different
+discovery mechanism rather than weakening the identity checks.
 
 ## Update procedure
 

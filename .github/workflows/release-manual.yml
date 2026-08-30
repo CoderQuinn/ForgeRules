@@ -43,7 +43,7 @@ jobs:
       - name: Build converter
         run: go build -o forgerules ./cmd/forgerules
 
-      - name: Test converter and enforce executable-line coverage
+      - name: Test converter and enforce Go-cover-profile-owned line coverage
         run: ./Scripts/check-go-coverage.sh
 
       - name: Run converter
@@ -79,7 +79,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}" published .
 
-      - name: Clean up failed dated draft
+      - name: Clean up failed dated release
         if: ${{ failure() && steps.dated_draft.outputs.id != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

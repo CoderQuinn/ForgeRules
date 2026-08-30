@@ -66,6 +66,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A successful POST must establish a genuinely fresh namespace. The release
+# listing is required because GitHub's release-by-tag endpoint does not expose
+# drafts, while the exact ref check rejects a pre-existing tag without a
+# release.
+query_releases_with_tag \
+    "${repository}" \
+    "${release_tag}" \
+    "${state_root}/matching-releases.json" \
+    "${state_root}"
+if [[ "$(jq 'length' "${state_root}/matching-releases.json")" -ne 0 ]]; then
+    echo "error: release namespace already contains tag ${release_tag}" >&2
+    exit 1
+fi
+if github_api_optional \
+    "repos/${repository}/git/ref/tags/${release_tag}" \
+    "${state_root}/preexisting-tag-ref.json"; then
+    echo "error: exact tag ref already exists before draft creation: ${release_tag}" >&2
+    exit 1
+else
+    query_status="$?"
+    if [[ "${query_status}" -ne 4 ]]; then
+        exit "${query_status}"
+    fi
+fi
+
 readonly curl_headers="${state_root}/curl-headers.txt"
 (
     umask 077

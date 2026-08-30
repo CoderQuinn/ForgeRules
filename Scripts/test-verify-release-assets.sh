@@ -8,6 +8,7 @@ readonly creator="${script_directory}/create-draft-release.sh"
 readonly publisher="${script_directory}/publish-draft-release.sh"
 readonly draft_cleanup="${script_directory}/cleanup-failed-draft-release.sh"
 readonly latest_delete="${script_directory}/delete-latest-release.sh"
+readonly retagger="${script_directory}/retag-draft-release.sh"
 readonly test_root="$(mktemp -d /tmp/forgerules-release-assets-test.XXXXXX)"
 readonly artifact_directory="${test_root}/artifacts"
 readonly state_directory="${test_root}/state"
@@ -32,27 +33,49 @@ write_release_state() {
     local tag="$2"
     local target="$3"
     local id="${4:-${release_id}}"
+    local make_latest="false"
+    if [[ "${draft}" == "false" && "${tag}" == "latest" ]]; then
+        make_latest="true"
+    fi
     jq -n \
         --argjson id "${id}" \
         --arg tag "${tag}" \
         --argjson draft "${draft}" \
         --arg target "${target}" \
-        '{id: $id, tag_name: $tag, draft: $draft, target_commitish: $target}' \
+        --arg make_latest "${make_latest}" \
+        '{
+            id: $id,
+            node_id: ("R_" + ($id | tostring)),
+            tag_name: $tag,
+            name: "Fixture Release",
+            draft: $draft,
+            prerelease: false,
+            immutable: false,
+            target_commitish: $target,
+            updated_at: "2026-08-30T00:00:00Z",
+            make_latest: $make_latest
+        }' \
         >"${state_directory}/release.json"
 }
 
 write_tag_state() {
     local target="$1"
-    jq -n --arg sha "${target}" '{sha: $sha}' >"${state_directory}/tag.json"
+    local tag="${2:-$(jq -r '.tag_name' "${state_directory}/release.json")}"
+    jq -n \
+        --arg name "${tag}" \
+        --arg sha "${target}" \
+        '{name: $name, type: "commit", sha: $sha}' >"${state_directory}/tag.json"
 }
 
 write_annotated_tag_state() {
     local target="$1"
+    local tag="${2:-$(jq -r '.tag_name' "${state_directory}/release.json")}"
     local tag_object_sha="cccccccccccccccccccccccccccccccccccccccc"
     jq -n \
+        --arg name "${tag}" \
         --arg type tag \
         --arg sha "${tag_object_sha}" \
-        '{type: $type, sha: $sha}' >"${state_directory}/tag.json"
+        '{name: $name, type: $type, sha: $sha}' >"${state_directory}/tag.json"
     jq -n \
         --arg tag_sha "${tag_object_sha}" \
         --arg target "${target}" \
@@ -65,6 +88,9 @@ reset_state() {
         "${state_directory}/annotated-tag.json" \
         "${state_directory}/release.json" \
         "${state_directory}/tag.json" \
+        "${state_directory}/patch-publish-count" \
+        "${state_directory}/patch-retag-count" \
+        "${state_directory}/tag-ref-query-count" \
         "${state_directory}/uploads.txt"
 }
 
@@ -135,6 +161,7 @@ fi
 if PATH="${fake_bin}:${PATH}" \
     FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
     FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_HIDE_RELEASE_FROM_LIST=true \
     GH_TOKEN=test-token \
     GITHUB_OUTPUT="${github_output}" \
     "${creator}" \
@@ -234,6 +261,19 @@ if PATH="${fake_bin}:${PATH}" \
     fail "incomplete remote asset set was accepted"
 fi
 
+printf 'unexpected remote fixture\n' >"${artifact_directory}/unexpected.bin"
+if run_with_fake_gh \
+    "${verifier}" \
+    "${repository}" \
+    "${release_id}" \
+    "${release_tag}" \
+    "${expected_commit}" \
+    published \
+    "${artifact_directory}" >/dev/null 2>&1; then
+    fail "unexpected remote release asset was accepted"
+fi
+rm -f "${artifact_directory}/unexpected.bin"
+
 if PATH="${fake_bin}:${PATH}" \
     FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
     FORGERULES_TEST_STATE_DIR="${state_directory}" \
@@ -279,36 +319,152 @@ if PATH="${fake_bin}:${PATH}" \
     fail "published release accepted a same-named branch without an exact tag ref"
 fi
 
-# Publishing the mutable alias uses the same ID checks but explicitly elects
-# it as GitHub's latest release.
+# The mutable alias is built as a unique staging-tag draft. The same exact ID
+# is retagged only after staging verification, remains private, and is then
+# published with an explicit GitHub latest pointer.
+readonly staging_tag="latest-staging-123-1"
 reset_state
-write_release_state true latest "${expected_commit}"
+write_release_state true "${staging_tag}" "${expected_commit}"
+run_with_fake_gh \
+    "${verifier}" \
+    "${repository}" \
+    "${release_id}" \
+    "${staging_tag}" \
+    "${expected_commit}" \
+    draft \
+    "${artifact_directory}" >/dev/null
+run_with_fake_gh \
+    "${retagger}" \
+    "${repository}" \
+    "${release_id}" \
+    "${staging_tag}" \
+    latest \
+    "${expected_commit}" >/dev/null
+if [[ "$(jq -r '[.id, .tag_name, .draft] | @tsv' "${state_directory}/release.json")" != $'101\tlatest\ttrue' || \
+      -e "${state_directory}/tag.json" ]]; then
+    fail "staging draft was not privately retagged by exact ID"
+fi
 run_with_fake_gh \
     "${publisher}" \
     "${repository}" \
     "${release_id}" \
     latest \
     "${expected_commit}" >/dev/null
-if [[ "$(jq -r '.draft' "${state_directory}/release.json")" != "false" ]]; then
-    fail "latest draft was not published"
+run_with_fake_gh \
+    "${verifier}" \
+    "${repository}" \
+    "${release_id}" \
+    latest \
+    "${expected_commit}" \
+    published \
+    "${artifact_directory}" >/dev/null
+if [[ "$(jq -r '[.draft, .make_latest] | @tsv' "${state_directory}/release.json")" != $'false\ttrue' ]]; then
+    fail "latest draft was not explicitly published as GitHub latest"
+fi
+if PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_LATEST_ID_OVERRIDE=202 \
+    "${verifier}" \
+    "${repository}" \
+    "${release_id}" \
+    latest \
+    "${expected_commit}" \
+    published \
+    "${artifact_directory}" >/dev/null 2>&1; then
+    fail "published latest verification ignored GitHub's latest-release pointer"
 fi
 
-# Cleanup removes only a draft with the exact ID, tag, and target.
+# A transport failure after either PATCH applied is reconciled as success; a
+# failure before mutation is retried once only from the intact pre-state.
+reset_state
+write_release_state true "${staging_tag}" "${expected_commit}"
+PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_PATCH_ERROR_AFTER_MUTATION=retag \
+    "${retagger}" \
+    "${repository}" \
+    "${release_id}" \
+    "${staging_tag}" \
+    latest \
+    "${expected_commit}" >/dev/null 2>&1
+if [[ "$(jq -r '.tag_name' "${state_directory}/release.json")" != "latest" ]]; then
+    fail "retag timeout-after-apply was not reconciled by exact ID"
+fi
+PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_PATCH_ERROR_AFTER_MUTATION=publish \
+    "${publisher}" \
+    "${repository}" \
+    "${release_id}" \
+    latest \
+    "${expected_commit}" >/dev/null 2>&1
+if [[ "$(jq -r '.draft' "${state_directory}/release.json")" != "false" ]]; then
+    fail "publish timeout-after-apply was not reconciled by exact ID"
+fi
+
+reset_state
+write_release_state true "${staging_tag}" "${expected_commit}"
+PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_PATCH_ERROR_BEFORE_MUTATION=retag \
+    "${retagger}" \
+    "${repository}" \
+    "${release_id}" \
+    "${staging_tag}" \
+    latest \
+    "${expected_commit}" >/dev/null 2>&1
+if [[ "$(<"${state_directory}/patch-retag-count")" -ne 2 ]]; then
+    fail "retag failure-before-apply did not use exactly one safe retry"
+fi
+PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_PATCH_ERROR_BEFORE_MUTATION=publish \
+    "${publisher}" \
+    "${repository}" \
+    "${release_id}" \
+    latest \
+    "${expected_commit}" >/dev/null 2>&1
+if [[ "$(<"${state_directory}/patch-publish-count")" -ne 2 ]]; then
+    fail "publish failure-before-apply did not use exactly one safe retry"
+fi
+
+# Draft cleanup removes only the exact fresh release. It never infers ownership
+# of a public tag from a matching SHA.
 reset_state
 write_release_state true "${release_tag}" "${expected_commit}"
-write_tag_state "${expected_commit}"
 run_with_fake_gh \
     "${draft_cleanup}" \
     "${repository}" \
     "${release_id}" \
     "${release_tag}" \
     "${expected_commit}" >/dev/null
-if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
-    fail "recoverable draft state was not fully removed"
+if [[ -e "${state_directory}/release.json" ]]; then
+    fail "exact failed draft was not removed"
 fi
 
-# A branch with the release-tag name must not be mistaken for an exact tag ref
-# during cleanup.
+reset_state
+write_release_state true "${release_tag}" "${expected_commit}"
+write_tag_state "${expected_commit}"
+if run_with_fake_gh \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${release_tag}" \
+    "${expected_commit}" >/dev/null 2>&1; then
+    fail "draft cleanup claimed an unassociated tag ref"
+fi
+if [[ -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "draft cleanup did not remove only the exact release ID"
+fi
+
+# A same-named branch is not an exact tag ref and cannot block exact-ID draft
+# cleanup.
+reset_state
 write_release_state true "${release_tag}" "${expected_commit}"
 PATH="${fake_bin}:${PATH}" \
     FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
@@ -323,9 +479,51 @@ if [[ -e "${state_directory}/release.json" ]]; then
     fail "branch-name collision prevented exact draft cleanup"
 fi
 
-# An expected-SHA tag is never deleted when the exact release ID is absent.
+# Cleanup accepts either owned stage name for the exact latest release ID, but
+# an unlisted tag or changed target fails before mutation.
 reset_state
-write_tag_state "${expected_commit}"
+write_release_state true latest "${expected_commit}"
+run_with_fake_gh \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${staging_tag}" \
+    "${expected_commit}" \
+    latest >/dev/null
+if [[ -e "${state_directory}/release.json" ]]; then
+    fail "cleanup rejected the exact ID after staging-to-latest retag"
+fi
+write_release_state true "rules-20260831" "${expected_commit}"
+if run_with_fake_gh \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${staging_tag}" \
+    "${expected_commit}" \
+    latest >/dev/null 2>&1; then
+    fail "cleanup accepted a tag outside its exact-ID allowlist"
+fi
+if [[ ! -e "${state_directory}/release.json" ]]; then
+    fail "tag identity mismatch mutated the exact release"
+fi
+write_release_state true "${staging_tag}" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+if run_with_fake_gh \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${staging_tag}" \
+    "${expected_commit}" \
+    latest >/dev/null 2>&1; then
+    fail "cleanup accepted a changed target for the exact release ID"
+fi
+if [[ ! -e "${state_directory}/release.json" ]]; then
+    fail "target identity mismatch mutated the exact release"
+fi
+
+# If the exact ID is gone, neither a same-SHA ref nor a release owned by a
+# different ID may be guessed as this workflow's object.
+reset_state
+write_tag_state "${expected_commit}" "${release_tag}"
 if run_with_fake_gh \
     "${draft_cleanup}" \
     "${repository}" \
@@ -337,23 +535,6 @@ fi
 if [[ ! -e "${state_directory}/tag.json" ]]; then
     fail "cleanup deleted an unassociated same-SHA tag"
 fi
-
-# Cleanup must never delete a published release.
-write_release_state false "${release_tag}" "${expected_commit}"
-write_tag_state "${expected_commit}"
-if run_with_fake_gh \
-    "${draft_cleanup}" \
-    "${repository}" \
-    "${release_id}" \
-    "${release_tag}" \
-    "${expected_commit}" >/dev/null 2>&1; then
-    fail "published release was accepted for draft cleanup"
-fi
-if [[ ! -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
-    fail "published release state changed during refused cleanup"
-fi
-
-# A different release owning the tag also blocks cleanup of an absent ID.
 write_release_state false "${release_tag}" "${expected_commit}" 202
 if run_with_fake_gh \
     "${draft_cleanup}" \
@@ -367,16 +548,203 @@ if [[ ! -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.jso
     fail "different published release state changed during refused cleanup"
 fi
 
-# Latest deletion distinguishes true absence from API failures and removes both
-# objects when present.
+# A valid failed publication is withdrawn release-first, then its still-stable
+# exact ref is deleted. Ambiguous DELETE responses are reconciled by absence.
+reset_state
+write_release_state false "${release_tag}" "${expected_commit}"
+write_tag_state "${expected_commit}"
+run_with_fake_gh \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${release_tag}" \
+    "${expected_commit}" >/dev/null
+if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
+    fail "verified failed publication state was not removed"
+fi
+
+reset_state
+write_release_state false "${release_tag}" "${expected_commit}"
+write_tag_state "${expected_commit}"
+PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_DELETE_ERROR_AFTER_MUTATION=release \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${release_tag}" \
+    "${expected_commit}" >/dev/null 2>&1
+if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
+    fail "ambiguous published-release delete was not reconciled"
+fi
+
+# If the public association or raw ref changes, the exact fresh release is
+# still withdrawn, but the now-unowned tag is preserved and cleanup fails.
+reset_state
+write_release_state false "${release_tag}" "${expected_commit}"
+write_tag_state "${expected_commit}"
+if PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_RELEASE_BY_TAG_ID_OVERRIDE=202 \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${release_tag}" \
+    "${expected_commit}" >/dev/null 2>&1; then
+    fail "published cleanup accepted a different release-by-tag owner"
+fi
+if [[ -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "published identity mismatch did not withdraw only the exact release"
+fi
+
+reset_state
+write_release_state false "${release_tag}" "${expected_commit}"
+write_tag_state "${expected_commit}"
+if PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_API_ERROR_MATCH="git/ref/tags/${release_tag}" \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${release_tag}" \
+    "${expected_commit}" >/dev/null 2>&1; then
+    fail "published cleanup treated unavailable tag evidence as sufficient"
+fi
+if [[ -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "tag-evidence API failure prevented exact public release withdrawal"
+fi
+
+reset_state
+write_release_state false "${release_tag}" "${expected_commit}"
+write_tag_state "${expected_commit}"
+if PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_MUTATE_TAG_ON_REF_QUERY=3 \
+    "${draft_cleanup}" \
+    "${repository}" \
+    "${release_id}" \
+    "${release_tag}" \
+    "${expected_commit}" >/dev/null 2>&1; then
+    fail "published cleanup ignored a post-release-delete tag replacement"
+fi
+if [[ -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "changed public tag was not preserved after exact release withdrawal"
+fi
+
+# Old latest deletion permits only a complete published release/ref pair or
+# complete absence. Draft, immutable, and asymmetric states are fail closed.
 reset_state
 run_with_fake_gh "${latest_delete}" "${repository}" >/dev/null
 write_release_state false latest "${expected_commit}"
 write_tag_state "${expected_commit}"
 run_with_fake_gh "${latest_delete}" "${repository}" >/dev/null
 if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
-    fail "previous latest release state was not removed"
+    fail "previous latest release/ref pair was not removed"
 fi
+
+reset_state
+write_release_state false latest "${expected_commit}"
+if run_with_fake_gh "${latest_delete}" "${repository}" >/dev/null 2>&1; then
+    fail "release-only latest state was accepted"
+fi
+if [[ ! -e "${state_directory}/release.json" ]]; then
+    fail "release-only latest state was mutated"
+fi
+reset_state
+write_tag_state "${expected_commit}" latest
+if run_with_fake_gh "${latest_delete}" "${repository}" >/dev/null 2>&1; then
+    fail "tag-only latest state was accepted"
+fi
+if [[ ! -e "${state_directory}/tag.json" ]]; then
+    fail "tag-only latest state was mutated"
+fi
+reset_state
+write_release_state true latest "${expected_commit}"
+if run_with_fake_gh "${latest_delete}" "${repository}" >/dev/null 2>&1; then
+    fail "hidden latest draft collision was accepted"
+fi
+if [[ ! -e "${state_directory}/release.json" ]]; then
+    fail "hidden latest draft collision was mutated"
+fi
+reset_state
+write_release_state false latest "${expected_commit}"
+jq '.immutable = true' "${state_directory}/release.json" >"${state_directory}/release.next.json"
+mv "${state_directory}/release.next.json" "${state_directory}/release.json"
+write_tag_state "${expected_commit}"
+if run_with_fake_gh "${latest_delete}" "${repository}" >/dev/null 2>&1; then
+    fail "immutable latest release was accepted for mutable replacement"
+fi
+if [[ ! -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "immutable latest state was mutated"
+fi
+
+# The raw ref object is rechecked before deletion. A pre-delete change blocks
+# all mutation; a change after exact release deletion preserves the new ref.
+reset_state
+write_release_state false latest "${expected_commit}"
+write_tag_state "${expected_commit}"
+jq -n \
+    --arg tag_sha "cccccccccccccccccccccccccccccccccccccccc" \
+    --arg target "${expected_commit}" \
+    '{tag_sha: $tag_sha, object: {type: "commit", sha: $target}}' \
+    >"${state_directory}/annotated-tag.json"
+if PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_MUTATE_TAG_ON_REF_QUERY=2 \
+    FORGERULES_TEST_MUTATED_TAG_TYPE=tag \
+    FORGERULES_TEST_MUTATED_TAG_SHA=cccccccccccccccccccccccccccccccccccccccc \
+    "${latest_delete}" "${repository}" >/dev/null 2>&1; then
+    fail "pre-delete raw latest ref replacement with the same peeled commit was accepted"
+fi
+if [[ ! -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "pre-delete latest ref replacement mutated state"
+fi
+
+reset_state
+write_release_state false latest "${expected_commit}"
+write_tag_state "${expected_commit}"
+if PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_MUTATE_TAG_ON_REF_QUERY=3 \
+    "${latest_delete}" "${repository}" >/dev/null 2>&1; then
+    fail "post-release-delete latest ref replacement was accepted"
+fi
+if [[ -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "post-release-delete latest ref replacement was not preserved"
+fi
+
+# Ambiguous old-state DELETE responses are accepted only after the exact
+# release/ref is confirmed absent.
+reset_state
+write_release_state false latest "${expected_commit}"
+write_tag_state "${expected_commit}"
+PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_DELETE_ERROR_AFTER_MUTATION=release \
+    "${latest_delete}" "${repository}" >/dev/null 2>&1
+if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
+    fail "ambiguous old latest release delete was not reconciled"
+fi
+reset_state
+write_release_state false latest "${expected_commit}"
+write_tag_state "${expected_commit}"
+PATH="${fake_bin}:${PATH}" \
+    FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
+    FORGERULES_TEST_STATE_DIR="${state_directory}" \
+    FORGERULES_TEST_DELETE_ERROR_AFTER_MUTATION=tag \
+    "${latest_delete}" "${repository}" >/dev/null 2>&1
+if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
+    fail "ambiguous old latest tag delete was not reconciled"
+fi
+
+reset_state
 if PATH="${fake_bin}:${PATH}" \
     FORGERULES_TEST_ARTIFACTS="${artifact_directory}" \
     FORGERULES_TEST_STATE_DIR="${state_directory}" \
@@ -402,4 +770,4 @@ if PATH="${fake_bin}:${PATH}" \
     fail "gh authentication exit status 4 was mistaken for the 404 sentinel"
 fi
 
-echo "Release ID, draft publication, cleanup, and latest replacement tests passed"
+echo "Fresh-ID draft, PATCH reconciliation, safe cleanup, and latest replacement tests passed"

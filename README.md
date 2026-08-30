@@ -24,21 +24,31 @@ go build -o forgerules ./cmd/forgerules
 ./Scripts/check-go-coverage.sh
 ```
 
-The gate requires at least 95% unique executable-line coverage across every
-active handwritten Go production file reported by `go list` for
-`cmd/forgerules` and `pkg`. An executable line is a unique, nonempty source line
-containing a non-comment, non-structural Go token inside an executable AST
-statement or expression and owned by a coverage-profile block whose statement
-count is greater than zero. This includes the continuation lines of multiline
-calls, conditions, literals, and return operands; braces, comments, case/select
-labels, and punctuation-only lines do not count. A line is covered when any
-owning executable block ran, and every executable token must map to such a block
-so a truncated profile fails closed. The report lists uncovered `file:line`
-locations deterministically. This is block-owned token-line coverage, not branch
-coverage. The gate still compiles and tests `./...`; only
+The gate requires at least 95% unique Go-cover-profile-owned token-line coverage.
+`go list` supplies every active handwritten production file in `cmd/forgerules`
+and `pkg`; the calculator then measures each unique, nonempty source line that
+contains a non-comment, non-structural token owned by a Go coverage counter. This
+includes continuation lines of multiline calls, conditions, literals, and
+return operands.
+
+Go 1.24 does not emit a counter for package-scope variable initializer
+expressions, so those expressions are explicitly outside this denominator. The
+instrumented bodies of functions they call remain measured. Conversely, switch
+`case` expressions and select communication-clause expressions are measured by
+the clause counter that Go anchors immediately after the colon; zero-statement,
+zero-width clause blocks are retained for this purpose. Structural keywords,
+default labels, ordinary labels, braces, comments, and punctuation-only lines do
+not count. A clause-expression line follows its clause counter and therefore
+does not claim branch coverage or prove that every individual condition was
+evaluated.
+
+Every token that Go makes cover-profile-owned, including clause expressions,
+must map to a profile block, so missing active files and truncated profiles fail
+closed within Go's instrumented surface. The report lists uncovered `file:line`
+locations deterministically. The gate still compiles and tests `./...`; only
 `proto/*.pb.go` is outside the measured roots because those files are generated
-from the checked-in `.proto` contracts. It does not filter individual
-production files or remove uncovered executable lines.
+from the checked-in `.proto` contracts. It does not filter individual production
+files or remove uncovered Go-cover-profile-owned lines.
 
 ## Usage
 

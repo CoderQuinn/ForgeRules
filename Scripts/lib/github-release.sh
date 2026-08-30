@@ -20,8 +20,8 @@ validate_github_repository() {
 
 validate_release_tag() {
     local value="$1"
-    if [[ ! "${value}" =~ ^(latest|rules-[0-9]{8})$ ]]; then
-        echo "error: release tag must be latest or rules-YYYYMMDD" >&2
+    if [[ ! "${value}" =~ ^(latest|rules-[0-9]{8}|latest-staging-[0-9]+-[0-9]+)$ ]]; then
+        echo "error: release tag must be latest, rules-YYYYMMDD, or latest-staging-RUN-ATTEMPT" >&2
         return 64
     fi
 }
@@ -134,6 +134,44 @@ peel_exact_tag_ref_to_commit() {
     printf '%s\n' "${object_sha}"
 }
 
+exact_tag_ref_fingerprint() {
+    local exact_tag_ref_file="$1"
+    local identity object_type object_sha
+    if ! identity="$(jq -er '[.object.type, .object.sha] | @tsv' "${exact_tag_ref_file}")"; then
+        echo "error: exact tag ref has no object identity" >&2
+        return 1
+    fi
+    IFS=$'\t' read -r object_type object_sha <<<"${identity}"
+    if [[ "${object_type}" != "commit" && "${object_type}" != "tag" ]]; then
+        echo "error: exact tag ref has unsupported object type ${object_type:-missing}" >&2
+        return 1
+    fi
+    validate_commit_sha "${object_sha}"
+    printf '%s:%s\n' "${object_type}" "${object_sha}"
+}
+
+query_releases_with_tag() {
+    local github_repository="$1"
+    local queried_release_tag="$2"
+    local matching_releases_file="$3"
+    local listing_state_root="$4"
+    local pages_file="${listing_state_root}/release-pages-$(basename "${matching_releases_file}")"
+
+    validate_release_tag "${queried_release_tag}"
+    gh api \
+        --paginate \
+        --slurp \
+        "repos/${github_repository}/releases?per_page=100" \
+        >"${pages_file}"
+    if ! jq -e \
+        --arg tag "${queried_release_tag}" \
+        '[.[][] | select(.tag_name == $tag)]' \
+        "${pages_file}" >"${matching_releases_file}"; then
+        echo "error: release listing is not a paginated array" >&2
+        return 1
+    fi
+}
+
 verify_published_release_tag() {
     local github_repository="$1"
     local expected_release_id="$2"
@@ -149,6 +187,18 @@ verify_published_release_tag() {
     if [[ "${tagged_release_id}" != "${expected_release_id}" ]]; then
         echo "error: tag ${expected_release_tag} resolves to release ${tagged_release_id}, want ${expected_release_id}" >&2
         return 1
+    fi
+
+    if [[ "${expected_release_tag}" == "latest" ]]; then
+        gh api \
+            "repos/${github_repository}/releases/latest" \
+            --jq '.id' >"${verification_state_root}/latest-release.txt"
+        local latest_release_id
+        latest_release_id="$(<"${verification_state_root}/latest-release.txt")"
+        if [[ "${latest_release_id}" != "${expected_release_id}" ]]; then
+            echo "error: GitHub latest release is ${latest_release_id}, want ${expected_release_id}" >&2
+            return 1
+        fi
     fi
 
     gh api \

@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "0 0 * * *"  
   workflow_dispatch:
+    inputs:
+      release_scope:
+        description: Publish a full dated release or repair only the mutable latest alias
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - latest-only
 
 permissions:
   contents: write
@@ -16,6 +25,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      FULL_RELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.release_scope == 'full' }}
 
     steps:
       - name: Checkout
@@ -32,7 +43,7 @@ jobs:
       - name: Build converter
         run: go build -o forgerules ./cmd/forgerules
 
-      - name: Test converter and enforce executable-line coverage
+      - name: Test converter and enforce Go-cover-profile-owned line coverage
         run: ./Scripts/check-go-coverage.sh
 
       - name: Run converter
@@ -40,16 +51,19 @@ jobs:
           ./forgerules -converter-revision "${GITHUB_SHA}"
 
       - name: Prepare release tag
+        if: ${{ env.FULL_RELEASE == 'true' }}
         id: tag
         run: |
           echo "tag=rules-$(date -u +'%Y%m%d')" >> $GITHUB_OUTPUT
 
       - name: Require a new immutable dated tag
+        if: ${{ env.FULL_RELEASE == 'true' }}
         env:
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: ./Scripts/check-release-tag-available.sh origin "${RELEASE_TAG}"
 
       - name: Create dated draft release
+        if: ${{ env.FULL_RELEASE == 'true' }}
         id: dated_draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -57,6 +71,7 @@ jobs:
         run: ./Scripts/create-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_TAG}" "Release ${RELEASE_TAG}" "${GITHUB_SHA}" .
 
       - name: Verify dated draft release
+        if: ${{ env.FULL_RELEASE == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.dated_draft.outputs.id }}
@@ -64,6 +79,7 @@ jobs:
         run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}" draft .
 
       - name: Publish dated release
+        if: ${{ env.FULL_RELEASE == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.dated_draft.outputs.id }}
@@ -71,32 +87,52 @@ jobs:
         run: ./Scripts/publish-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}"
 
       - name: Verify published dated release
+        if: ${{ env.FULL_RELEASE == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.dated_draft.outputs.id }}
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}" published .
 
-      - name: Clean up failed dated draft
-        if: ${{ failure() && steps.dated_draft.outputs.id != '' }}
+      - name: Clean up failed dated release
+        if: ${{ failure() && env.FULL_RELEASE == 'true' && steps.dated_draft.outputs.id != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.dated_draft.outputs.id }}
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: ./Scripts/cleanup-failed-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}"
 
+      - name: Prepare latest staging tag
+        id: latest_tag
+        run: echo "tag=latest-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create latest staging draft
+        id: latest_draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGING_TAG: ${{ steps.latest_tag.outputs.tag }}
+        run: ./Scripts/create-draft-release.sh "${GITHUB_REPOSITORY}" "${STAGING_TAG}" "Latest Rules" "${GITHUB_SHA}" .
+
+      - name: Verify latest staging draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
+          STAGING_TAG: ${{ steps.latest_tag.outputs.tag }}
+        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${STAGING_TAG}" "${GITHUB_SHA}" draft .
+
       - name: Delete previous latest release explicitly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./Scripts/delete-latest-release.sh "${GITHUB_REPOSITORY}"
 
-      - name: Create latest draft release
-        id: latest_draft
+      - name: Retag verified staging draft to latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./Scripts/create-draft-release.sh "${GITHUB_REPOSITORY}" latest "Latest Rules" "${GITHUB_SHA}" .
+          RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
+          STAGING_TAG: ${{ steps.latest_tag.outputs.tag }}
+        run: ./Scripts/retag-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${STAGING_TAG}" latest "${GITHUB_SHA}"
 
-      - name: Verify latest draft release
+      - name: Verify retagged latest draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
@@ -114,9 +150,10 @@ jobs:
           RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
         run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" latest "${GITHUB_SHA}" published .
 
-      - name: Clean up failed latest draft
+      - name: Clean up failed latest release
         if: ${{ failure() && steps.latest_draft.outputs.id != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
-        run: ./Scripts/cleanup-failed-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" latest "${GITHUB_SHA}"
+          STAGING_TAG: ${{ steps.latest_tag.outputs.tag }}
+        run: ./Scripts/cleanup-failed-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${STAGING_TAG}" "${GITHUB_SHA}" latest

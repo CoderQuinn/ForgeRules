@@ -49,7 +49,7 @@ func evaluate(left, right bool) int {
 	}
 }
 
-func TestCalculateExcludesStructuralClauseAndCommentLines(t *testing.T) {
+func TestCalculateExcludesCommentsAndStructuralClauseTokens(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -84,8 +84,146 @@ func classify(value int, ch <-chan int) int {
 	if err != nil {
 		t.Fatalf("calculate coverage: %v", err)
 	}
-	if report.covered != 7 || report.total != 7 {
-		t.Fatalf("report = %#v, want seven non-structural executable lines", report)
+	if report.covered != 9 || report.total != 9 {
+		t.Fatalf("report = %#v, want nine profile-owned token lines including clause expressions", report)
+	}
+}
+
+func TestCalculateUsesGoClauseCountersForClauseExpressions(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	source := `package sample
+
+func check() bool { return true }
+
+func clauses(ch <-chan int) {
+	switch {
+	case check():
+	}
+	select {
+	case <-ch:
+	default:
+	}
+}
+`
+	sourcePath := writeFixture(t, root, "pkg/sample.go", source)
+	filesPath := writeFixture(t, root, "files.txt", sourcePath+"\n")
+	checkStart, checkEnd := textSpan(t, source, "return true", "return true")
+	switchStart, switchEnd := textSpan(t, source, "switch {", "switch {")
+	selectStart, selectEnd := textSpan(t, source, "select {", "select {")
+	profile := "mode: count\n" +
+		profileEntry("pkg/sample.go", source, checkStart, checkEnd, 1, 1) +
+		profileEntry("pkg/sample.go", source, switchStart, switchEnd, 1, 1) +
+		zeroWidthClauseProfileEntry("pkg/sample.go", source, "case check():", 1) +
+		profileEntry("pkg/sample.go", source, selectStart, selectEnd, 1, 1) +
+		zeroWidthClauseProfileEntry("pkg/sample.go", source, "case <-ch:", 0)
+	profilePath := writeFixture(t, root, "coverage.out", profile)
+
+	report, err := calculate(fixtureConfig(root, filesPath, profilePath))
+	if err != nil {
+		t.Fatalf("calculate coverage: %v", err)
+	}
+	if report.covered != 4 || report.total != 5 {
+		t.Fatalf("report = %#v, want 4/5 with the unselected communication clause uncovered", report)
+	}
+	if len(report.uncovered) != 1 || report.uncovered[0].line != 10 {
+		t.Fatalf("uncovered = %#v, want the select communication expression on line 10", report.uncovered)
+	}
+
+	truncatedPath := writeFixture(t, root, "truncated.out", "mode: count\n"+
+		profileEntry("pkg/sample.go", source, checkStart, checkEnd, 1, 1)+
+		profileEntry("pkg/sample.go", source, switchStart, switchEnd, 1, 1)+
+		profileEntry("pkg/sample.go", source, selectStart, selectEnd, 1, 1))
+	_, err = calculate(fixtureConfig(root, filesPath, truncatedPath))
+	if err == nil || !strings.Contains(err.Error(), "clause expression has no coverage block") {
+		t.Fatalf("truncated clause profile error = %v", err)
+	}
+}
+
+func TestCalculateKeepsTypeSwitchTypeListsStructural(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	source := `package sample
+
+func classify(value any) int {
+	switch value.(type) {
+	case int:
+		return 1
+	default:
+		return 0
+	}
+}
+`
+	sourcePath := writeFixture(t, root, "pkg/sample.go", source)
+	filesPath := writeFixture(t, root, "files.txt", sourcePath+"\n")
+	start, end := textSpan(t, source, "switch value.(type)", "return 0")
+	profilePath := writeFixture(t, root, "coverage.out", "mode: count\n"+
+		profileEntry("pkg/sample.go", source, start, end, 3, 1))
+
+	report, err := calculate(fixtureConfig(root, filesPath, profilePath))
+	if err != nil {
+		t.Fatalf("calculate coverage: %v", err)
+	}
+	if report.covered != 3 || report.total != 3 {
+		t.Fatalf("report = %#v, want switch and body lines without type-list labels", report)
+	}
+}
+
+func TestCalculateExplicitlySkipsGoUninstrumentedPackageInitializers(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	source := `package sample
+
+var initialized = initialize()
+
+func initialize() int {
+	return 1
+}
+`
+	sourcePath := writeFixture(t, root, "pkg/sample.go", source)
+	filesPath := writeFixture(t, root, "files.txt", sourcePath+"\n")
+	start, end := textSpan(t, source, "return 1", "return 1")
+	profilePath := writeFixture(t, root, "coverage.out", "mode: atomic\n"+
+		profileEntry("pkg/sample.go", source, start, end, 1, 1))
+
+	analysis, err := analyzeSource(sourcePath)
+	if err != nil {
+		t.Fatalf("analyze source: %v", err)
+	}
+	if len(analysis.uninstrumentedByGo) == 0 {
+		t.Fatal("package-scope initializer was not named as uninstrumented by Go")
+	}
+	report, err := calculate(fixtureConfig(root, filesPath, profilePath))
+	if err != nil {
+		t.Fatalf("calculate coverage: %v", err)
+	}
+	if report.covered != 1 || report.total != 1 {
+		t.Fatalf("report = %#v, want only the Go-instrumented function body", report)
+	}
+}
+
+func TestCalculateAllowsActiveFileWithOnlyGoUninstrumentedInitializers(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	initializerSource := "package sample\nvar initialized = 41\n"
+	workerSource := "package sample\nfunc work() int { return 1 }\n"
+	initializerPath := writeFixture(t, root, "pkg/initializer.go", initializerSource)
+	workerPath := writeFixture(t, root, "pkg/worker.go", workerSource)
+	filesPath := writeFixture(t, root, "files.txt", initializerPath+"\n"+workerPath+"\n")
+	start, end := textSpan(t, workerSource, "return 1", "return 1")
+	profilePath := writeFixture(t, root, "coverage.out", "mode: atomic\n"+
+		profileEntry("pkg/worker.go", workerSource, start, end, 1, 1))
+
+	report, err := calculate(fixtureConfig(root, filesPath, profilePath))
+	if err != nil {
+		t.Fatalf("calculate coverage: %v", err)
+	}
+	if report.covered != 1 || report.total != 1 {
+		t.Fatalf("report = %#v, want the uninstrumented-only active file audited but not measured", report)
 	}
 }
 
@@ -249,7 +387,7 @@ func work() {
 		profileEntry("pkg/sample.go", source, start, end, 1, 1))
 
 	_, err := calculate(fixtureConfig(root, filesPath, profilePath))
-	if err == nil || !strings.Contains(err.Error(), "executable token has no coverage block") {
+	if err == nil || !strings.Contains(err.Error(), "Go-coverable token has no coverage block") {
 		t.Fatalf("truncated profile error = %v", err)
 	}
 }
@@ -291,6 +429,15 @@ func profileEntry(moduleFile, source string, start, end, statements, count int) 
 		statements,
 		count,
 	)
+}
+
+func zeroWidthClauseProfileEntry(moduleFile, source, clause string, count int) string {
+	anchor := strings.Index(source, clause)
+	if anchor < 0 {
+		panic(fmt.Sprintf("clause %q not found", clause))
+	}
+	anchor += len(clause)
+	return profileEntry(moduleFile, source, anchor, anchor, 0, count)
 }
 
 func fixtureSourcePosition(source string, offset int) (line, column int) {

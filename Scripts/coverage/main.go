@@ -42,16 +42,24 @@ type offsetRange struct {
 
 type offsetCoverageBlock struct {
 	offsetRange
-	count uint64
+	numStatements uint64
+	count         uint64
+}
+
+type clauseExpression struct {
+	offsetRange
+	profileAnchor int
 }
 
 type sourceAnalysis struct {
-	contents       []byte
-	lineStarts     []int
-	executable     []offsetRange
-	statements     []offsetRange
-	excluded       []offsetRange
-	semanticTokens []offsetRange
+	contents           []byte
+	lineStarts         []int
+	executable         []offsetRange
+	statements         []offsetRange
+	excluded           []offsetRange
+	uninstrumentedByGo []offsetRange
+	clauseExpressions  []clauseExpression
+	semanticTokens     []offsetRange
 }
 
 type lineKey struct {
@@ -92,20 +100,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&config.filesPath, "files", "", "newline-delimited active production Go files")
 	flags.StringVar(&config.moduleRoot, "module-root", "", "absolute or relative module root")
 	flags.StringVar(&config.modulePath, "module-path", "", "Go module import path")
-	flags.Float64Var(&config.minimum, "minimum", 95, "minimum executable-line coverage percentage")
+	flags.Float64Var(&config.minimum, "minimum", 95, "minimum Go-cover-profile-owned line coverage percentage")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 
 	report, err := calculate(config)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: calculate executable-line coverage: %v\n", err)
+		fmt.Fprintf(stderr, "error: calculate Go-cover-profile-owned line coverage: %v\n", err)
 		return 1
 	}
 	actual := report.percentage()
 	fmt.Fprintf(
 		stdout,
-		"First-party unique executable-line coverage: %d/%d (%.2f%%; required: %.2f%%)\n",
+		"First-party unique Go-cover-profile-owned line coverage: %d/%d (%.2f%%; required: %.2f%%)\n",
 		report.covered,
 		report.total,
 		actual,
@@ -113,7 +121,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	)
 	writeUncoveredLines(stdout, report.uncovered, config.moduleRoot)
 	if actual+1e-9 < config.minimum {
-		fmt.Fprintln(stderr, "error: first-party unique executable-line coverage is below the required threshold")
+		fmt.Fprintln(stderr, "error: first-party unique Go-cover-profile-owned line coverage is below the required threshold")
 		return 1
 	}
 	return 0
@@ -145,18 +153,18 @@ func calculate(config calculatorConfig) (coverageReport, error) {
 		if err != nil {
 			return coverageReport{}, err
 		}
-		hasExecutableStatements := hasExecutableStatementTokens(analysis)
-		fileBlocks := instrumentedCoverageBlocks(blocks[file])
-		if hasExecutableStatements && len(fileBlocks) == 0 {
+		hasGoCoverableStatements := hasGoCoverableStatementTokens(analysis)
+		profileBlocks := blocks[file]
+		if hasGoCoverableStatements && len(positiveStatementCoverageBlocks(profileBlocks)) == 0 {
 			return coverageReport{}, fmt.Errorf("active production file is absent from coverage profile: %s", file)
 		}
-		measured, err := measureSourceLines(file, analysis, fileBlocks)
+		measured, err := measureSourceLines(file, analysis, profileBlocks)
 		if err != nil {
 			return coverageReport{}, err
 		}
-		if hasExecutableStatements && len(measured) == 0 {
+		if hasGoCoverableStatements && len(measured) == 0 {
 			return coverageReport{}, fmt.Errorf(
-				"active production file has no executable overlap with its coverage profile: %s",
+				"active production file has no Go-coverable overlap with its coverage profile: %s",
 				file,
 			)
 		}
@@ -168,7 +176,7 @@ func calculate(config calculatorConfig) (coverageReport, error) {
 
 	report := coverageReport{total: len(lineCoverage)}
 	if report.total == 0 {
-		return coverageReport{}, errors.New("no executable production lines were found")
+		return coverageReport{}, errors.New("no Go-cover-profile-owned production lines were found")
 	}
 	for key, covered := range lineCoverage {
 		if covered {
@@ -188,10 +196,10 @@ func calculate(config calculatorConfig) (coverageReport, error) {
 
 func writeUncoveredLines(output io.Writer, uncovered []lineKey, moduleRoot string) {
 	if len(uncovered) == 0 {
-		fmt.Fprintln(output, "Uncovered executable lines: none")
+		fmt.Fprintln(output, "Uncovered Go-cover-profile-owned lines: none")
 		return
 	}
-	fmt.Fprintln(output, "Uncovered executable lines:")
+	fmt.Fprintln(output, "Uncovered Go-cover-profile-owned lines:")
 	root, err := filepath.Abs(moduleRoot)
 	if err != nil {
 		root = moduleRoot
@@ -311,7 +319,7 @@ func readCoverageProfile(path, moduleRoot, modulePath string) (map[string][]cove
 	return blocks, nil
 }
 
-func instrumentedCoverageBlocks(blocks []coverageBlock) []coverageBlock {
+func positiveStatementCoverageBlocks(blocks []coverageBlock) []coverageBlock {
 	instrumented := make([]coverageBlock, 0, len(blocks))
 	for _, block := range blocks {
 		if block.numStatements > 0 {
@@ -358,10 +366,21 @@ func analyzeSource(path string) (sourceAnalysis, error) {
 		contents:   contents,
 		lineStarts: sourceLineStarts(contents),
 	}
-	walkExecutableStatements(parsed, parsedFile, &analysis)
+	walkExecutableStatements(parsed, parsedFile, typeSwitchClauses(parsed), &analysis)
 	analysis.statements = normalizeRanges(analysis.statements)
 	analysis.excluded = normalizeRanges(analysis.excluded)
 	analysis.executable = append(analysis.executable, analysis.statements...)
+	for _, initializer := range packageScopeInitializerRanges(parsed, parsedFile) {
+		analysis.executable = append(analysis.executable, initializer)
+		pieces := []offsetRange{initializer}
+		for _, statement := range analysis.statements {
+			if statement.start < initializer.start || statement.end > initializer.end {
+				continue
+			}
+			pieces = subtractRange(pieces, statement)
+		}
+		analysis.uninstrumentedByGo = append(analysis.uninstrumentedByGo, pieces...)
+	}
 	ast.Inspect(parsed, func(node ast.Node) bool {
 		expression, ok := node.(ast.Expr)
 		if !ok {
@@ -371,15 +390,16 @@ func analyzeSource(path string) (sourceAnalysis, error) {
 			start: parsedFile.Offset(expression.Pos()),
 			end:   parsedFile.Offset(expression.End()),
 		}
-		// Only expressions inside executable statement spans qualify. This
-		// excludes declarations and, together with the clause exclusions,
-		// case/select labels while retaining multiline executable operands.
+		// Expressions inside executable statement spans retain their multiline
+		// token lines. Package-scope variable initializers are added separately
+		// because Go 1.24 does not emit coverage counters for those expressions.
 		if len(allowedIntersections(expressionRange, analysis.statements, analysis.excluded)) > 0 {
 			analysis.executable = append(analysis.executable, expressionRange)
 		}
 		return true
 	})
 	analysis.executable = normalizeRanges(analysis.executable)
+	analysis.uninstrumentedByGo = normalizeRanges(analysis.uninstrumentedByGo)
 	analysis.semanticTokens, err = scanSemanticTokens(path, contents)
 	if err != nil {
 		return sourceAnalysis{}, err
@@ -387,7 +407,52 @@ func analyzeSource(path string) (sourceAnalysis, error) {
 	return analysis, nil
 }
 
-func walkExecutableStatements(root ast.Node, file *token.File, analysis *sourceAnalysis) {
+func packageScopeInitializerRanges(fileNode *ast.File, file *token.File) []offsetRange {
+	ranges := make([]offsetRange, 0)
+	for _, declaration := range fileNode.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok || general.Tok != token.VAR {
+			continue
+		}
+		for _, specification := range general.Specs {
+			value, ok := specification.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, initializer := range value.Values {
+				ranges = append(ranges, offsetRange{
+					start: file.Offset(initializer.Pos()),
+					end:   file.Offset(initializer.End()),
+				})
+			}
+		}
+	}
+	return ranges
+}
+
+func typeSwitchClauses(root ast.Node) map[*ast.CaseClause]struct{} {
+	clauses := make(map[*ast.CaseClause]struct{})
+	ast.Inspect(root, func(node ast.Node) bool {
+		statement, ok := node.(*ast.TypeSwitchStmt)
+		if !ok {
+			return true
+		}
+		for _, bodyStatement := range statement.Body.List {
+			if clause, ok := bodyStatement.(*ast.CaseClause); ok {
+				clauses[clause] = struct{}{}
+			}
+		}
+		return true
+	})
+	return clauses
+}
+
+func walkExecutableStatements(
+	root ast.Node,
+	file *token.File,
+	typeClauses map[*ast.CaseClause]struct{},
+	analysis *sourceAnalysis,
+) {
 	var walk func(ast.Node)
 	walk = func(current ast.Node) {
 		ast.Inspect(current, func(node ast.Node) bool {
@@ -397,12 +462,33 @@ func walkExecutableStatements(root ast.Node, file *token.File, analysis *sourceA
 			switch value := node.(type) {
 			case *ast.CaseClause:
 				analysis.excluded = append(analysis.excluded, rangeThroughToken(file, value.Pos(), value.Colon))
+				if _, isTypeSwitchClause := typeClauses[value]; !isTypeSwitchClause {
+					anchor := file.Offset(value.Colon) + 1
+					for _, expression := range value.List {
+						analysis.clauseExpressions = append(analysis.clauseExpressions, clauseExpression{
+							offsetRange: offsetRange{
+								start: file.Offset(expression.Pos()),
+								end:   file.Offset(expression.End()),
+							},
+							profileAnchor: anchor,
+						})
+					}
+				}
 				for _, statement := range value.Body {
 					walk(statement)
 				}
 				return false
 			case *ast.CommClause:
 				analysis.excluded = append(analysis.excluded, rangeThroughToken(file, value.Pos(), value.Colon))
+				if value.Comm != nil {
+					analysis.clauseExpressions = append(analysis.clauseExpressions, clauseExpression{
+						offsetRange: offsetRange{
+							start: file.Offset(value.Comm.Pos()),
+							end:   file.Offset(value.Comm.End()),
+						},
+						profileAnchor: file.Offset(value.Colon) + 1,
+					})
+				}
 				for _, statement := range value.Body {
 					walk(statement)
 				}
@@ -532,7 +618,7 @@ func normalizeRanges(ranges []offsetRange) []offsetRange {
 	return result
 }
 
-func hasExecutableStatementTokens(analysis sourceAnalysis) bool {
+func hasGoCoverableStatementTokens(analysis sourceAnalysis) bool {
 	for _, semantic := range analysis.semanticTokens {
 		if len(allowedIntersections(semantic, analysis.statements, analysis.excluded)) > 0 {
 			return true
@@ -552,12 +638,13 @@ func measureSourceLines(path string, analysis sourceAnalysis, blocks []coverageB
 		if err != nil {
 			return nil, fmt.Errorf("invalid coverage block end for %s: %w", path, err)
 		}
-		if start >= end {
+		if start > end || (start == end && block.numStatements > 0) {
 			return nil, fmt.Errorf("invalid empty or reversed coverage block for %s", path)
 		}
 		offsetBlocks = append(offsetBlocks, offsetCoverageBlock{
-			offsetRange: offsetRange{start: start, end: end},
-			count:       block.count,
+			offsetRange:   offsetRange{start: start, end: end},
+			numStatements: block.numStatements,
+			count:         block.count,
 		})
 	}
 
@@ -569,6 +656,9 @@ func measureSourceLines(path string, analysis sourceAnalysis, blocks []coverageB
 				found := false
 				covered := false
 				for _, block := range offsetBlocks {
+					if block.numStatements == 0 {
+						continue
+					}
 					if _, ok := intersectRanges(piece.offsetRange, block.offsetRange); !ok {
 						continue
 					}
@@ -576,9 +666,12 @@ func measureSourceLines(path string, analysis sourceAnalysis, blocks []coverageB
 					covered = covered || block.count > 0
 				}
 				if !found {
+					if rangeCoveredByRanges(piece.offsetRange, analysis.uninstrumentedByGo) {
+						continue
+					}
 					column := piece.start - analysis.lineStarts[piece.line-1] + 1
 					return nil, fmt.Errorf(
-						"executable token has no coverage block: %s:%d:%d",
+						"Go-coverable token has no coverage block: %s:%d:%d",
 						path,
 						piece.line,
 						column,
@@ -588,7 +681,57 @@ func measureSourceLines(path string, analysis sourceAnalysis, blocks []coverageB
 			}
 		}
 	}
+
+	for _, clause := range analysis.clauseExpressions {
+		found := false
+		covered := false
+		for _, block := range offsetBlocks {
+			_, overlapsExpression := intersectRanges(clause.offsetRange, block.offsetRange)
+			if block.start != clause.profileAnchor && !overlapsExpression {
+				continue
+			}
+			found = true
+			covered = covered || block.count > 0
+		}
+		if !found {
+			position := sourceOffsetPosition(clause.start, analysis.lineStarts)
+			return nil, fmt.Errorf(
+				"Go-coverable clause expression has no coverage block: %s:%d:%d",
+				path,
+				position.line,
+				position.column,
+			)
+		}
+		for _, semantic := range analysis.semanticTokens {
+			segment, ok := intersectRanges(semantic, clause.offsetRange)
+			if !ok {
+				continue
+			}
+			for _, piece := range nonemptyLinePieces(analysis.contents, analysis.lineStarts, segment) {
+				measured[piece.line] = measured[piece.line] || covered
+			}
+		}
+	}
 	return measured, nil
+}
+
+func rangeCoveredByRanges(subject offsetRange, ranges []offsetRange) bool {
+	pieces := []offsetRange{subject}
+	for _, current := range ranges {
+		pieces = subtractRange(pieces, current)
+		if len(pieces) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceOffsetPosition(offset int, lineStarts []int) sourcePosition {
+	lineIndex := lineIndexAtOffset(lineStarts, offset)
+	return sourcePosition{
+		line:   lineIndex + 1,
+		column: offset - lineStarts[lineIndex] + 1,
+	}
 }
 
 func sourcePositionOffset(position sourcePosition, contents []byte, lineStarts []int) (int, error) {
