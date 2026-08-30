@@ -99,7 +99,8 @@ For QuantumLink 0.8.0, ForgeRules is an offline production asset builder, not a
 runtime dependency. Automatic conversion reads the reviewed
 `rules.sources.lock.json`; it never follows mutable `latest` URLs. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the source and output
-contracts.
+contracts and [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for immutable dated
+releases, staged activation, last-known-good receipts, and rollback.
 
 ## License
 

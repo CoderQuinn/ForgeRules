@@ -79,6 +79,8 @@ same SHA-256-pinned fixture is loaded by ForgeRuleCore bundle tests, so the
 producer and evaluator share a real contract without creating a runtime or
 package dependency.
 
-The rollback pointer and cross-repository ForgeRuleCore golden acceptance remain
-separate delivery gates; this document does not claim those later gates are
-complete.
+The cross-repository ForgeRuleCore golden acceptance is pinned by SHA-256 and
+loaded in ForgeRuleCore CI. Dated release tags are immutable, while the host
+owns atomic activation and the applied-revision pointer. See
+[`OPERATIONS.md`](OPERATIONS.md) for the update, last-known-good, and rollback
+contract.
