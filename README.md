@@ -100,7 +100,10 @@ runtime dependency. Automatic conversion reads the reviewed
 `rules.sources.lock.json`; it never follows mutable `latest` URLs. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the source and output
 contracts and [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for immutable dated
-releases, staged activation, last-known-good receipts, and rollback.
+releases, staged activation, last-known-good receipts, and rollback. The
+[`public-data audit`](docs/PUBLIC-DATA-AUDIT.md) describes why the automatic
+release path cannot ingest operator configuration, credentials, or private
+endpoints.
 
 ## License
 

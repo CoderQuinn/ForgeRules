@@ -41,9 +41,11 @@ Each asset records:
 
 The CLI rejects unknown lock fields, unsupported schema versions, mutable or
 inconsistent URLs, invalid revisions/digests/sizes, duplicate source names, and
-GeoIP epochs that do not match `publishedAt`. Downloads are written to a
-temporary file, size- and digest-verified, and atomically renamed so a failed
-update cannot overwrite a previously valid local file.
+GeoIP epochs that do not match `publishedAt`. Automatic builds accept only the
+reviewed public repositories and asset names listed in the validator; source
+URLs cannot contain user information, query parameters, or fragments. Downloads
+are written to a temporary file, size- and digest-verified, and atomically
+renamed so a failed update cannot overwrite a previously valid local file.
 
 Updating a dataset requires a reviewed lock-file change with the new release
 tag, resolved commit, published time, size, and digest. Editing only the URL or
@@ -83,4 +85,5 @@ The cross-repository ForgeRuleCore golden acceptance is pinned by SHA-256 and
 loaded in ForgeRuleCore CI. Dated release tags are immutable, while the host
 owns atomic activation and the applied-revision pointer. See
 [`OPERATIONS.md`](OPERATIONS.md) for the update, last-known-good, and rollback
-contract.
+contract and [`PUBLIC-DATA-AUDIT.md`](PUBLIC-DATA-AUDIT.md) for the release-data
+privacy boundary.

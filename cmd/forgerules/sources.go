@@ -16,10 +16,20 @@ import (
 
 const sourceLockSchemaVersion = 1
 
-var (
-	sourceNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
-	revisionPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
-)
+var sourceNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+var revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var approvedPublicAssets = map[string]map[string]struct{}{
+	"v2fly/domain-list-community": {
+		"dlc.dat": {},
+	},
+	"v2fly/geoip": {
+		"geoip.dat": {},
+	},
+	"Loyalsoldier/v2ray-rules-dat": {
+		"geosite.dat": {},
+		"geoip.dat":   {},
+	},
+}
 
 type sourceLock struct {
 	SchemaVersion int            `json:"schemaVersion"`
@@ -130,6 +140,10 @@ func (asset lockedAsset) validate(kind, sourceName string, allowedNames ...strin
 	if strings.Count(asset.Repository, "/") != 1 {
 		return fmt.Errorf("%s repository is invalid", label)
 	}
+	publicAssets, approvedRepository := approvedPublicAssets[asset.Repository]
+	if !approvedRepository {
+		return fmt.Errorf("%s repository is not an approved public source", label)
+	}
 	if asset.ReleaseTag == "" {
 		return fmt.Errorf("%s releaseTag is empty", label)
 	}
@@ -154,11 +168,17 @@ func (asset lockedAsset) validate(kind, sourceName string, allowedNames ...strin
 	if parsedURL.Scheme != "https" || parsedURL.Host != "github.com" {
 		return fmt.Errorf("%s url must use https://github.com", label)
 	}
+	if parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.ForceQuery || parsedURL.Fragment != "" {
+		return fmt.Errorf("%s url must not include credentials, query parameters, or fragments", label)
+	}
 	expectedPrefix := "/" + asset.Repository + "/releases/download/" + asset.ReleaseTag + "/"
 	if !strings.HasPrefix(parsedURL.Path, expectedPrefix) {
 		return fmt.Errorf("%s url does not match repository and releaseTag", label)
 	}
 	assetName := path.Base(parsedURL.Path)
+	if _, approvedAsset := publicAssets[assetName]; !approvedAsset {
+		return fmt.Errorf("%s asset %q is not approved for repository %q", label, assetName, asset.Repository)
+	}
 	for _, allowedName := range allowedNames {
 		if assetName == allowedName {
 			return nil

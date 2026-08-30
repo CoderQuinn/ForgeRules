@@ -34,6 +34,36 @@ func TestDecodeSourceLockRejectsInvalidContracts(t *testing.T) {
 		"mutable latest URL": strings.ReplaceAll(
 			validSourceLockJSON(), "/download/v1/", "/download/latest/",
 		),
+		"unapproved repository": strings.Replace(
+			validSourceLockJSON(),
+			"v2fly/domain-list-community",
+			"example/private-rules",
+			1,
+		),
+		"URL credentials": strings.Replace(
+			validSourceLockJSON(),
+			"https://github.com/v2fly/domain-list-community/",
+			"https://redacted@github.com/v2fly/domain-list-community/",
+			1,
+		),
+		"URL query parameters": strings.Replace(
+			validSourceLockJSON(),
+			"/dlc.dat\"",
+			"/dlc.dat?token=redacted\"",
+			1,
+		),
+		"URL fragment": strings.Replace(
+			validSourceLockJSON(),
+			"/dlc.dat\"",
+			"/dlc.dat#private\"",
+			1,
+		),
+		"asset not approved for repository": strings.Replace(
+			validSourceLockJSON(),
+			"/dlc.dat\"",
+			"/geosite.dat\"",
+			1,
+		),
 		"invalid digest": strings.Replace(
 			validSourceLockJSON(), strings.Repeat("a", 64), "abc", 1,
 		),
@@ -64,20 +94,20 @@ func validLockedSourceJSON() string {
 	return fmt.Sprintf(`{
 		"name": "official",
 		"geosite": {
-			"repository": "example/rules",
+			"repository": "v2fly/domain-list-community",
 			"releaseTag": "v1",
 			"revision": "%s",
 			"publishedAt": "2023-11-14T22:13:20Z",
-			"url": "https://github.com/example/rules/releases/download/v1/geosite.dat",
+			"url": "https://github.com/v2fly/domain-list-community/releases/download/v1/dlc.dat",
 			"sha256": "%s",
 			"size": 5
 		},
 		"geoip": {
-			"repository": "example/rules",
+			"repository": "v2fly/geoip",
 			"releaseTag": "v1",
 			"revision": "%s",
 			"publishedAt": "2023-11-14T22:13:20Z",
-			"url": "https://github.com/example/rules/releases/download/v1/geoip.dat",
+			"url": "https://github.com/v2fly/geoip/releases/download/v1/geoip.dat",
 			"sha256": "%s",
 			"size": 5,
 			"buildEpoch": 1700000000
