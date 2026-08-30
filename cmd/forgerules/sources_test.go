@@ -139,6 +139,24 @@ func TestDecodeSourceLockRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeSourceLockRejectsInvalidGeoIPContract(t *testing.T) {
+	t.Parallel()
+
+	contents := strings.Replace(
+		validSourceLockJSON(),
+		strings.Repeat("b", 64),
+		"not-a-digest",
+		1,
+	)
+	_, err := decodeSourceLock(strings.NewReader(contents))
+	if err == nil {
+		t.Fatal("expected invalid geoip contract to fail")
+	}
+	if !strings.Contains(err.Error(), `source "official" geoip sha256`) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestLoadSourceLock(t *testing.T) {
 	t.Parallel()
 

@@ -24,11 +24,21 @@ go build -o forgerules ./cmd/forgerules
 ./Scripts/check-go-coverage.sh
 ```
 
-The gate requires at least 95% line coverage across every handwritten Go
-production package in `cmd/forgerules` and `pkg`. It still compiles and tests
-`./...`; only `proto/*.pb.go` is outside the measured roots because those files
-are generated from the checked-in `.proto` contracts. The gate does not filter
-individual production files or remove uncovered lines from the profile.
+The gate requires at least 95% unique executable-line coverage across every
+active handwritten Go production file reported by `go list` for
+`cmd/forgerules` and `pkg`. An executable line is a unique, nonempty source line
+containing a non-comment, non-structural Go token inside an executable AST
+statement or expression and owned by a coverage-profile block whose statement
+count is greater than zero. This includes the continuation lines of multiline
+calls, conditions, literals, and return operands; braces, comments, case/select
+labels, and punctuation-only lines do not count. A line is covered when any
+owning executable block ran, and every executable token must map to such a block
+so a truncated profile fails closed. The report lists uncovered `file:line`
+locations deterministically. This is block-owned token-line coverage, not branch
+coverage. The gate still compiles and tests `./...`; only
+`proto/*.pb.go` is outside the measured roots because those files are generated
+from the checked-in `.proto` contracts. It does not filter individual
+production files or remove uncovered executable lines.
 
 ## Usage
 

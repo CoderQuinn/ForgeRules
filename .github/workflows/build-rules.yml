@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -30,7 +32,7 @@ jobs:
       - name: Build converter
         run: go build -o forgerules ./cmd/forgerules
 
-      - name: Test converter and enforce first-party coverage
+      - name: Test converter and enforce executable-line coverage
         run: ./Scripts/check-go-coverage.sh
 
       - name: Run converter
@@ -47,53 +49,74 @@ jobs:
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: ./Scripts/check-release-tag-available.sh origin "${RELEASE_TAG}"
 
-      - name: Create dated release
-        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Release ${{ steps.tag.outputs.tag }}
-          files: |
-            official_geosite.json
-            official_geoip.mmdb
-            loyalsoldier_geosite.json
-            loyalsoldier_geoip.mmdb
-            rules.sources.lock.json
-            rules-manifest.json
-            SHA256SUMS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify dated release
+      - name: Create dated draft release
+        id: dated_draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
-        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_TAG}" .
+        run: ./Scripts/create-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_TAG}" "Release ${RELEASE_TAG}" "${GITHUB_SHA}" .
 
-      - name: Delete previous latest release
-        uses: dev-drprasad/delete-tag-and-release@82600feb9527126eca69833f07bafe53279bd9b4 # v1.1
-        with:
-          tag_name: latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
-      - name: Create latest release
-        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
-        with:
-          tag_name: latest
-          name: Latest Rules
-          files: |
-            official_geosite.json
-            official_geoip.mmdb
-            loyalsoldier_geosite.json
-            loyalsoldier_geoip.mmdb
-            rules.sources.lock.json
-            rules-manifest.json
-            SHA256SUMS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify latest release
+      - name: Verify dated draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" latest .
+          RELEASE_ID: ${{ steps.dated_draft.outputs.id }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}" draft .
+
+      - name: Publish dated release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.dated_draft.outputs.id }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: ./Scripts/publish-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}"
+
+      - name: Verify published dated release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.dated_draft.outputs.id }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}" published .
+
+      - name: Clean up failed dated draft
+        if: ${{ failure() && steps.dated_draft.outputs.id != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.dated_draft.outputs.id }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: ./Scripts/cleanup-failed-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" "${RELEASE_TAG}" "${GITHUB_SHA}"
+
+      - name: Delete previous latest release explicitly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./Scripts/delete-latest-release.sh "${GITHUB_REPOSITORY}"
+
+      - name: Create latest draft release
+        id: latest_draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./Scripts/create-draft-release.sh "${GITHUB_REPOSITORY}" latest "Latest Rules" "${GITHUB_SHA}" .
+
+      - name: Verify latest draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
+        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" latest "${GITHUB_SHA}" draft .
+
+      - name: Publish latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
+        run: ./Scripts/publish-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" latest "${GITHUB_SHA}"
+
+      - name: Verify published latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
+        run: ./Scripts/verify-release-assets.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" latest "${GITHUB_SHA}" published .
+
+      - name: Clean up failed latest draft
+        if: ${{ failure() && steps.latest_draft.outputs.id != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.latest_draft.outputs.id }}
+        run: ./Scripts/cleanup-failed-draft-release.sh "${GITHUB_REPOSITORY}" "${RELEASE_ID}" latest "${GITHUB_SHA}"

@@ -15,9 +15,13 @@ receipt, and rollback.
   rollback identifier.
 - A dated release tag is write-once. Release workflows fail if that tag already
   exists; they never replace its assets.
-- The workflow creates and verifies the immutable dated release before it
-  replaces `latest`. Verification downloads the published asset set, compares
-  every byte with the build output, and validates `SHA256SUMS`.
+- The workflow creates each dated release with a fresh REST `201` response; it
+  never discovers or updates a draft by tag. It records that exact release ID,
+  verifies the commit-bound draft and every remotely uploaded byte, and only
+  then publishes it. After publication it requires the tag, release ID, and
+  peeled commit to agree before replacing `latest` through the same
+  draft-verify-publish sequence. Verification validates `SHA256SUMS` as well as
+  byte equality with the build output.
 - Every downloaded file is verified against `SHA256SUMS`. The manifest's
   converter revision, source-lock digest, selected bundle, sizes, and digests
   must agree with the downloaded files before runtime validation begins.
@@ -37,9 +41,10 @@ receipt, and rollback.
 2. Require the Go contract gate and pinned-source gate. The latter converts the
    complete locked inputs twice, validates both checksum files, and compares
    every output byte-for-byte.
-3. Merge the reviewed change. The release workflow creates a new immutable
-   `rules-YYYYMMDD` release containing the four rule assets, the published
-   source lock, `rules-manifest.json`, and `SHA256SUMS`.
+3. Merge the reviewed change. The release workflow stages a new immutable
+   `rules-YYYYMMDD` draft containing the four rule assets, the published source
+   lock, `rules-manifest.json`, and `SHA256SUMS`; it publishes only after remote
+   verification by release ID succeeds.
 4. Download the dated release to a new staging directory and verify it before
    selecting a bundle:
 
