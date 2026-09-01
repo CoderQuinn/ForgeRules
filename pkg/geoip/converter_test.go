@@ -2,13 +2,19 @@ package geoip
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"io/fs"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	pb "github.com/CoderQuinn/ForgeRules/proto"
+	"github.com/maxmind/mmdbwriter"
+	"github.com/maxmind/mmdbwriter/mmdbtype"
 	maxminddb "github.com/oschwald/maxminddb-golang/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -77,6 +83,189 @@ func TestDatToMMDBRejectsNegativeBuildEpoch(t *testing.T) {
 	err := DatToMMDBWithOptions("unused.dat", "unused.mmdb", MMDBOptions{BuildEpoch: -1})
 	if err == nil {
 		t.Fatal("expected negative build epoch to fail")
+	}
+}
+
+func TestDatToMMDBRejectsInvalidCIDRWithoutReplacingOutput(t *testing.T) {
+	t.Parallel()
+
+	input := &pb.GeoIPList{Entry: []*pb.GeoIP{{
+		CountryCode: "US",
+		Cidr: []*pb.CIDR{
+			testCIDR("8.8.8.0/24"),
+			{Ip: []byte{1, 2, 3}, Prefix: 24},
+		},
+	}}}
+	tempDir := t.TempDir()
+	datPath := writeGeoIPFixture(t, tempDir, input)
+	outputPath := filepath.Join(tempDir, "geoip.mmdb")
+	const lastKnownGood = "last-known-good"
+	if err := os.WriteFile(outputPath, []byte(lastKnownGood), 0o600); err != nil {
+		t.Fatalf("write existing output: %v", err)
+	}
+
+	err := DatToMMDB(datPath, outputPath)
+	if err == nil {
+		t.Fatal("expected invalid CIDR to fail")
+	}
+	if !strings.Contains(err.Error(), `geoip entry 0 ("US") CIDR 1`) {
+		t.Errorf("error lacks source context: %v", err)
+	}
+	if actual := string(readGeoIPOutput(t, tempDir)); actual != lastKnownGood {
+		t.Errorf("output = %q, want preserved %q", actual, lastKnownGood)
+	}
+	freshOutputPath := filepath.Join(tempDir, "fresh.mmdb")
+	if err := DatToMMDB(datPath, freshOutputPath); err == nil {
+		t.Fatal("expected invalid CIDR to fail for a fresh output")
+	}
+	if _, err := os.Stat(freshOutputPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("invalid CIDR published a fresh output, stat error = %v", err)
+	}
+}
+
+func TestDatToMMDBFailsClosedOnWriterInsertError(t *testing.T) {
+	t.Parallel()
+
+	input := &pb.GeoIPList{Entry: []*pb.GeoIP{{
+		CountryCode: "US",
+		Cidr:        []*pb.CIDR{testCIDR("8.8.8.0/24")},
+	}}}
+	tempDir := t.TempDir()
+	datPath := writeGeoIPFixture(t, tempDir, input)
+	outputPath := filepath.Join(tempDir, "geoip.mmdb")
+	const lastKnownGood = "last-known-good"
+	if err := os.WriteFile(outputPath, []byte(lastKnownGood), 0o600); err != nil {
+		t.Fatalf("write existing output: %v", err)
+	}
+
+	writeCalled := false
+	err := datToMMDBWithOptions(datPath, outputPath, MMDBOptions{}, func(mmdbwriter.Options) (mmdbTree, error) {
+		return &stubMMDBTree{
+			insert: func(*net.IPNet, mmdbtype.DataType) error {
+				return errors.New("injected insert failure")
+			},
+			writeTo: func(io.Writer) (int64, error) {
+				writeCalled = true
+				return 0, nil
+			},
+		}, nil
+	})
+	if err == nil {
+		t.Fatal("expected writer insert error to fail")
+	}
+	if !strings.Contains(err.Error(), "injected insert failure") {
+		t.Errorf("error = %v", err)
+	}
+	if writeCalled {
+		t.Error("writer was published after an insert failure")
+	}
+	if actual := string(readGeoIPOutput(t, tempDir)); actual != lastKnownGood {
+		t.Errorf("output = %q, want preserved %q", actual, lastKnownGood)
+	}
+}
+
+func TestDatToMMDBPreservesOutputOnWriteError(t *testing.T) {
+	t.Parallel()
+
+	input := &pb.GeoIPList{Entry: []*pb.GeoIP{{
+		CountryCode: "US",
+		Cidr:        []*pb.CIDR{testCIDR("8.8.8.0/24")},
+	}}}
+	tempDir := t.TempDir()
+	datPath := writeGeoIPFixture(t, tempDir, input)
+	outputPath := filepath.Join(tempDir, "geoip.mmdb")
+	const lastKnownGood = "last-known-good"
+	if err := os.WriteFile(outputPath, []byte(lastKnownGood), 0o600); err != nil {
+		t.Fatalf("write existing output: %v", err)
+	}
+
+	err := datToMMDBWithOptions(datPath, outputPath, MMDBOptions{}, func(mmdbwriter.Options) (mmdbTree, error) {
+		return &stubMMDBTree{
+			insert: func(*net.IPNet, mmdbtype.DataType) error { return nil },
+			writeTo: func(io.Writer) (int64, error) {
+				return 0, errors.New("injected write failure")
+			},
+		}, nil
+	})
+	if err == nil {
+		t.Fatal("expected writer output error to fail")
+	}
+	if actual := string(readGeoIPOutput(t, tempDir)); actual != lastKnownGood {
+		t.Errorf("output = %q, want preserved %q", actual, lastKnownGood)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(tempDir, ".geoip.mmdb.*"))
+	if globErr != nil {
+		t.Fatalf("find temporary outputs: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Errorf("temporary outputs were not removed: %v", matches)
+	}
+}
+
+func TestDatToMMDBRejectsUnreadableAndMalformedInput(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "geoip.mmdb")
+	if err := DatToMMDB(filepath.Join(tempDir, "missing.dat"), outputPath); err == nil {
+		t.Fatal("expected missing input to fail")
+	}
+	malformedPath := filepath.Join(tempDir, "malformed.dat")
+	if err := os.WriteFile(malformedPath, []byte{0xff}, 0o600); err != nil {
+		t.Fatalf("write malformed input: %v", err)
+	}
+	if err := DatToMMDB(malformedPath, outputPath); err == nil {
+		t.Fatal("expected malformed protobuf to fail")
+	}
+	if _, err := os.Stat(outputPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("failed conversions published an output, stat error = %v", err)
+	}
+}
+
+func TestDatToMMDBReportsWriterCreationAndOutputPathErrors(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	datPath := writeGeoIPFixture(t, tempDir, &pb.GeoIPList{})
+	err := datToMMDBWithOptions(datPath, filepath.Join(tempDir, "unused.mmdb"), MMDBOptions{}, func(mmdbwriter.Options) (mmdbTree, error) {
+		return nil, errors.New("injected creation failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected creation failure") {
+		t.Fatalf("writer creation error = %v", err)
+	}
+
+	missingParentOutput := filepath.Join(tempDir, "missing", "geoip.mmdb")
+	if err := DatToMMDB(datPath, missingParentOutput); err == nil {
+		t.Fatal("expected missing output directory to fail")
+	}
+
+	directoryTarget := filepath.Join(tempDir, "directory-target")
+	if err := os.Mkdir(directoryTarget, 0o700); err != nil {
+		t.Fatalf("create directory target: %v", err)
+	}
+	writer := &stubMMDBTree{
+		insert: func(*net.IPNet, mmdbtype.DataType) error { return nil },
+		writeTo: func(destination io.Writer) (int64, error) {
+			written, err := destination.Write([]byte("mmdb"))
+			return int64(written), err
+		},
+	}
+	if err := writeMMDBAtomically(directoryTarget, writer); err == nil {
+		t.Fatal("expected replacement of a directory to fail")
+	}
+}
+
+func TestParseCIDRRejectsNilAndInvalidPrefix(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseCIDR(nil); err == nil {
+		t.Fatal("expected nil CIDR to fail")
+	}
+	if _, err := parseCIDR(&pb.CIDR{
+		Ip:     netip.MustParseAddr("192.0.2.1").AsSlice(),
+		Prefix: 33,
+	}); err == nil {
+		t.Fatal("expected invalid IPv4 prefix to fail")
 	}
 }
 
@@ -175,4 +364,39 @@ func assertCountryCode(t *testing.T, database *maxminddb.Reader, ip, expected st
 	if record.Country.ISOCode != expected {
 		t.Errorf("country code for %s = %q, want %q", ip, record.Country.ISOCode, expected)
 	}
+}
+
+type stubMMDBTree struct {
+	insert  func(*net.IPNet, mmdbtype.DataType) error
+	writeTo func(io.Writer) (int64, error)
+}
+
+func (tree *stubMMDBTree) Insert(network *net.IPNet, value mmdbtype.DataType) error {
+	return tree.insert(network, value)
+}
+
+func (tree *stubMMDBTree) WriteTo(writer io.Writer) (int64, error) {
+	return tree.writeTo(writer)
+}
+
+func writeGeoIPFixture(t *testing.T, directory string, input *pb.GeoIPList) string {
+	t.Helper()
+	data, err := proto.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	path := filepath.Join(directory, "geoip.dat")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	return path
+}
+
+func readGeoIPOutput(t *testing.T, directory string) []byte {
+	t.Helper()
+	data, err := fs.ReadFile(os.DirFS(directory), "geoip.mmdb")
+	if err != nil {
+		t.Fatalf("read geoip.mmdb: %v", err)
+	}
+	return data
 }
