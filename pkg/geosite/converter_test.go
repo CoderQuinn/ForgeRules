@@ -82,7 +82,7 @@ func TestDatToJSONSupportsEveryKnownDomainTypeAndAttribute(t *testing.T) {
 	}
 
 	var output GeoSiteListJSON
-	if err := json.Unmarshal(readGeoSiteFile(t, outputPath), &output); err != nil {
+	if err := json.Unmarshal(readGeoSiteOutput(t, tempDir), &output); err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
 	if len(output.GeoSites) != 1 || len(output.GeoSites[0].Domains) != 4 {
@@ -125,7 +125,7 @@ func TestDatToJSONRejectsUnknownDomainTypeWithoutReplacingOutput(t *testing.T) {
 	if !strings.Contains(err.Error(), "unsupported domain type 99") {
 		t.Errorf("error = %v", err)
 	}
-	if actual := string(readGeoSiteFile(t, outputPath)); actual != lastKnownGood {
+	if actual := string(readGeoSiteOutput(t, tempDir)); actual != lastKnownGood {
 		t.Errorf("output = %q, want preserved %q", actual, lastKnownGood)
 	}
 	freshOutputPath := filepath.Join(tempDir, "fresh.json")
@@ -183,11 +183,11 @@ func writeGeoSiteFixture(t *testing.T, directory string, input *pb.GeoSiteList) 
 	return path
 }
 
-func readGeoSiteFile(t *testing.T, path string) []byte {
+func readGeoSiteOutput(t *testing.T, directory string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(path) // #nosec G304 -- test paths are created under t.TempDir.
+	data, err := fs.ReadFile(os.DirFS(directory), "geosite.json")
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatalf("read geosite.json: %v", err)
 	}
 	return data
 }

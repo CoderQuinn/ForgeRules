@@ -111,7 +111,7 @@ func TestDatToMMDBRejectsInvalidCIDRWithoutReplacingOutput(t *testing.T) {
 	if !strings.Contains(err.Error(), `geoip entry 0 ("US") CIDR 1`) {
 		t.Errorf("error lacks source context: %v", err)
 	}
-	if actual := string(readFile(t, outputPath)); actual != lastKnownGood {
+	if actual := string(readGeoIPOutput(t, tempDir)); actual != lastKnownGood {
 		t.Errorf("output = %q, want preserved %q", actual, lastKnownGood)
 	}
 	freshOutputPath := filepath.Join(tempDir, "fresh.mmdb")
@@ -159,7 +159,7 @@ func TestDatToMMDBFailsClosedOnWriterInsertError(t *testing.T) {
 	if writeCalled {
 		t.Error("writer was published after an insert failure")
 	}
-	if actual := string(readFile(t, outputPath)); actual != lastKnownGood {
+	if actual := string(readGeoIPOutput(t, tempDir)); actual != lastKnownGood {
 		t.Errorf("output = %q, want preserved %q", actual, lastKnownGood)
 	}
 }
@@ -190,7 +190,7 @@ func TestDatToMMDBPreservesOutputOnWriteError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected writer output error to fail")
 	}
-	if actual := string(readFile(t, outputPath)); actual != lastKnownGood {
+	if actual := string(readGeoIPOutput(t, tempDir)); actual != lastKnownGood {
 		t.Errorf("output = %q, want preserved %q", actual, lastKnownGood)
 	}
 	matches, globErr := filepath.Glob(filepath.Join(tempDir, ".geoip.mmdb.*"))
@@ -392,11 +392,11 @@ func writeGeoIPFixture(t *testing.T, directory string, input *pb.GeoIPList) stri
 	return path
 }
 
-func readFile(t *testing.T, path string) []byte {
+func readGeoIPOutput(t *testing.T, directory string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(path) // #nosec G304 -- test paths are created under t.TempDir.
+	data, err := fs.ReadFile(os.DirFS(directory), "geoip.mmdb")
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatalf("read geoip.mmdb: %v", err)
 	}
 	return data
 }
