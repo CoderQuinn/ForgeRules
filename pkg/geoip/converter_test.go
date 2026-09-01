@@ -394,7 +394,7 @@ func writeGeoIPFixture(t *testing.T, directory string, input *pb.GeoIPList) stri
 
 func readFile(t *testing.T, path string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- test paths are created under t.TempDir.
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}

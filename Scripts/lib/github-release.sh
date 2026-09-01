@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# Consumed by scripts that source this shared release library.
+# shellcheck disable=SC2034
 declare -ar FORGERULES_RELEASE_ASSETS=(
     "SHA256SUMS"
     "loyalsoldier_geoip.mmdb"
