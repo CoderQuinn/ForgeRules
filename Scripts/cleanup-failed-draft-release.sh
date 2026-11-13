@@ -57,7 +57,18 @@ optional_query() {
 }
 
 release_fingerprint() {
-    jq -cer '[
+    jq -cer 'select(
+        type == "object"
+        and (.id | type == "number" and floor == . and . >= 0)
+        and (.tag_name | type == "string" and length > 0)
+        and (.draft | type == "boolean")
+        and (.prerelease | type == "boolean")
+        and (.target_commitish | type == "string" and length > 0)
+        and (.node_id | . == null or type == "string")
+        and (.name | . == null or type == "string")
+        and (.immutable | . == null or type == "boolean")
+        and (.updated_at | . == null or type == "string")
+    ) | [
         .id,
         .node_id,
         .tag_name,
@@ -159,13 +170,21 @@ if [[ "${target_commitish}" != "${expected_commit}" ]]; then
     echo "error: refusing cleanup of release target ${target_commitish}, want ${expected_commit}" >&2
     exit 1
 fi
-readonly original_release_fingerprint="$(release_fingerprint "${state_root}/release.json")"
+if ! original_release_fingerprint="$(release_fingerprint "${state_root}/release.json")"; then
+    echo "error: unable to fingerprint exact release snapshot" >&2
+    exit 1
+fi
+readonly original_release_fingerprint
 
 tag_delete_authorized=false
 published_association_valid=true
 published_ref_exists=false
 published_tag_fingerprint=""
+preserve_published_dated_tag=false
 if [[ "${actual_draft}" == "false" ]]; then
+    if [[ "${actual_tag}" =~ ^rules-[0-9]{8}$ ]]; then
+        preserve_published_dated_tag=true
+    fi
     if query_releases_with_tag \
         "${repository}" \
         "${actual_tag}" \
@@ -212,18 +231,22 @@ if [[ "${actual_draft}" == "false" ]]; then
                 published_association_valid=false
             fi
         else
-            echo "warning: unable to fingerprint or peel published tag ${actual_tag}; exact release will still be withdrawn and its ref preserved" >&2
-            published_association_valid=false
+            echo "error: unable to fingerprint or peel published tag ${actual_tag}; stopping cleanup" >&2
+            exit 1
         fi
     else
         query_status="$?"
         if [[ "${query_status}" -ne 4 ]]; then
-            echo "warning: unable to query published tag ref ${actual_tag}; exact release will still be withdrawn and its ref preserved" >&2
-            published_association_valid=false
+            echo "error: unable to query published tag fingerprint; stopping cleanup" >&2
+            exit "${query_status}"
         fi
     fi
     if [[ "${published_association_valid}" == "true" && "${published_ref_exists}" == "true" ]]; then
         tag_delete_authorized=true
+    fi
+    if [[ "${preserve_published_dated_tag}" == "true" && "${published_ref_exists}" != "true" ]]; then
+        echo "error: published dated tag ${actual_tag} has no verified reservation; manual recovery is required" >&2
+        exit 1
     fi
 fi
 
@@ -241,7 +264,11 @@ else
     fi
     exit "${query_status}"
 fi
-if [[ "$(release_fingerprint "${state_root}/release-recheck.json")" != "${original_release_fingerprint}" ]]; then
+if ! rechecked_release_fingerprint="$(release_fingerprint "${state_root}/release-recheck.json")"; then
+    echo "error: unable to fingerprint exact release recheck; stopping cleanup" >&2
+    exit 1
+fi
+if [[ "${rechecked_release_fingerprint}" != "${original_release_fingerprint}" ]]; then
     echo "error: exact release ID ${release_id} changed before cleanup" >&2
     exit 1
 fi
@@ -297,16 +324,18 @@ if [[ "${actual_draft}" == "false" ]]; then
                 tag_delete_authorized=false
             fi
         else
-            echo "warning: unable to recheck published tag identity; exact release will still be withdrawn and its ref preserved" >&2
-            published_association_valid=false
-            tag_delete_authorized=false
+            echo "error: unable to fingerprint or peel published tag recheck; stopping cleanup" >&2
+            exit 1
         fi
     else
         query_status="$?"
         if [[ "${query_status}" -ne 4 ]]; then
-            echo "warning: unable to recheck published tag ref; exact release will still be withdrawn and its ref preserved" >&2
-            published_association_valid=false
-            tag_delete_authorized=false
+            echo "error: unable to query published tag fingerprint recheck; stopping cleanup" >&2
+            exit "${query_status}"
+        fi
+        if [[ "${preserve_published_dated_tag}" == "true" ]]; then
+            echo "error: published dated reservation ${actual_tag} disappeared before withdrawal; manual recovery is required" >&2
+            exit 1
         fi
         if [[ "${published_ref_exists}" == "true" ]]; then
             echo "warning: published tag ref disappeared before exact-ID cleanup" >&2
@@ -316,8 +345,8 @@ if [[ "${actual_draft}" == "false" ]]; then
     fi
 fi
 
-# Always withdraw the exact fresh release first. This is safe for either a
-# draft or an ambiguously published release and never relies on tag discovery.
+# After successful fingerprints, withdraw only the exact fresh release ID.
+# Unknown public associations remain explicit failures with their refs intact.
 if ! gh api \
     --method DELETE \
     "repos/${repository}/releases/${release_id}"; then
@@ -380,11 +409,17 @@ fi
 if optional_query \
     "repos/${repository}/git/ref/tags/${actual_tag}" \
     "${state_root}/published-tag-recheck.json"; then
-    rechecked_tag_fingerprint="$(exact_tag_ref_fingerprint "${state_root}/published-tag-recheck.json")"
-    rechecked_commit="$(peel_exact_tag_ref_to_commit \
+    if ! rechecked_tag_fingerprint="$(exact_tag_ref_fingerprint "${state_root}/published-tag-recheck.json")"; then
+        echo "error: unable to fingerprint remaining published tag; stopping cleanup" >&2
+        exit 1
+    fi
+    if ! rechecked_commit="$(peel_exact_tag_ref_to_commit \
         "${repository}" \
         "${state_root}/published-tag-recheck.json" \
-        "${state_root}")"
+        "${state_root}")"; then
+        echo "error: unable to peel remaining published tag; stopping cleanup" >&2
+        exit 1
+    fi
     if [[ "${rechecked_tag_fingerprint}" != "${published_tag_fingerprint}" || \
           "${rechecked_commit}" != "${expected_commit}" ]]; then
         echo "error: exact published release was removed, but tag ${actual_tag} changed and was preserved" >&2
@@ -393,10 +428,19 @@ if optional_query \
 else
     query_status="$?"
     if [[ "${query_status}" -eq 4 ]]; then
+        if [[ "${preserve_published_dated_tag}" == "true" ]]; then
+            echo "error: published dated reservation ${actual_tag} disappeared after release withdrawal; manual recovery is required" >&2
+            exit 1
+        fi
         echo "Cleaned failed published release ID ${release_id}; tag ${actual_tag} was already absent"
         exit 0
     fi
     exit "${query_status}"
+fi
+
+if [[ "${preserve_published_dated_tag}" == "true" ]]; then
+    echo "Withdrew failed published release ID ${release_id}; dated tag ${actual_tag} remains reserved to ${expected_commit}"
+    exit 0
 fi
 
 if [[ "${tag_delete_authorized}" != "true" ]]; then

@@ -79,6 +79,7 @@ if [[ -z "${endpoint}" ]]; then
     echo "fake gh api endpoint is missing" >&2
     exit 64
 fi
+printf '%s %s\n' "${method}" "${endpoint}" >>"${FORGERULES_TEST_STATE_DIR}/api.log"
 if [[ -n "${FORGERULES_TEST_API_ERROR_MATCH:-}" && "${endpoint}" == *"${FORGERULES_TEST_API_ERROR_MATCH}"* ]]; then
     echo "${FORGERULES_TEST_API_ERROR_MESSAGE:-gh: injected API failure (HTTP 503)}" >&2
     exit "${FORGERULES_TEST_API_ERROR_STATUS:-1}"
@@ -186,6 +187,11 @@ if [[ "${method}" == "DELETE" && "${endpoint}" =~ /releases/([0-9]+)$ ]]; then
     if [[ ! -f "${release_file}" || "$(release_id_from_state)" != "${BASH_REMATCH[1]}" ]]; then
         not_found
     fi
+    release_delete_count="$(increment_counter "${FORGERULES_TEST_STATE_DIR}/release-delete-count")"
+    if [[ "${FORGERULES_TEST_DELETE_ERROR_BEFORE_MUTATION:-}" == "release" && "${release_delete_count}" -eq 1 ]]; then
+        echo "gh: injected release delete timeout before mutation" >&2
+        exit 1
+    fi
     rm -f "${release_file}"
     if [[ "${FORGERULES_TEST_DELETE_ERROR_AFTER_MUTATION:-}" == "release" ]]; then
         echo "gh: injected release delete timeout after mutation" >&2
@@ -198,6 +204,11 @@ if [[ "${method}" == "DELETE" && "${endpoint}" =~ /git/refs/tags/(.+)$ ]]; then
     requested_tag="${BASH_REMATCH[1]}"
     if [[ ! -f "${tag_file}" || "$(jq -r '.name' "${tag_file}")" != "${requested_tag}" ]]; then
         not_found
+    fi
+    tag_delete_count="$(increment_counter "${FORGERULES_TEST_STATE_DIR}/tag-delete-count")"
+    if [[ "${FORGERULES_TEST_DELETE_ERROR_BEFORE_MUTATION:-}" == "tag" && "${tag_delete_count}" -eq 1 ]]; then
+        echo "gh: injected tag delete timeout before mutation" >&2
+        exit 1
     fi
     rm -f "${tag_file}"
     if [[ "${FORGERULES_TEST_DELETE_ERROR_AFTER_MUTATION:-}" == "tag" ]]; then
@@ -337,6 +348,10 @@ if [[ "${endpoint}" =~ /git/ref/tags/(.+)$ ]]; then
         not_found
     fi
     tag_ref_query_count="$(increment_counter "${tag_ref_query_count_file}")"
+    if [[ "${tag_ref_query_count}" -eq "${FORGERULES_TEST_REMOVE_TAG_ON_REF_QUERY:-0}" ]]; then
+        rm -f "${tag_file}"
+        not_found
+    fi
     if [[ -n "${FORGERULES_TEST_MUTATE_TAG_ON_REF_QUERY:-}" && \
           "${tag_ref_query_count}" -eq "${FORGERULES_TEST_MUTATE_TAG_ON_REF_QUERY}" ]]; then
         temp_tag="${FORGERULES_TEST_STATE_DIR}/tag.next.json"

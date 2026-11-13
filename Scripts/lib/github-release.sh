@@ -116,11 +116,11 @@ peel_exact_tag_ref_to_commit() {
             echo "error: annotated tag chain exceeds 16 objects" >&2
             return 1
         fi
-        validate_commit_sha "${object_sha}"
+        validate_commit_sha "${object_sha}" || return "$?"
         local tag_object_file="${tag_object_state_root}/tag-object-${depth}.json"
         gh api \
             "repos/${github_repository}/git/tags/${object_sha}" \
-            >"${tag_object_file}"
+            >"${tag_object_file}" || return "$?"
         if ! object_metadata="$(jq -er '[.object.type, .object.sha] | @tsv' "${tag_object_file}")"; then
             echo "error: annotated tag object ${object_sha} has no target identity" >&2
             return 1
@@ -132,7 +132,7 @@ peel_exact_tag_ref_to_commit() {
         echo "error: exact tag ref terminates at unsupported object type ${object_type:-missing}" >&2
         return 1
     fi
-    validate_commit_sha "${object_sha}"
+    validate_commit_sha "${object_sha}" || return "$?"
     printf '%s\n' "${object_sha}"
 }
 
@@ -148,7 +148,7 @@ exact_tag_ref_fingerprint() {
         echo "error: exact tag ref has unsupported object type ${object_type:-missing}" >&2
         return 1
     fi
-    validate_commit_sha "${object_sha}"
+    validate_commit_sha "${object_sha}" || return "$?"
     printf '%s:%s\n' "${object_type}" "${object_sha}"
 }
 

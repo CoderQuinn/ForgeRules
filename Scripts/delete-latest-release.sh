@@ -37,7 +37,18 @@ optional_query() {
 }
 
 release_fingerprint() {
-    jq -cer '[
+    jq -cer 'select(
+        type == "object"
+        and (.id | type == "number" and floor == . and . >= 0)
+        and (.tag_name | type == "string" and length > 0)
+        and (.draft | type == "boolean")
+        and (.prerelease | type == "boolean")
+        and (.target_commitish | type == "string" and length > 0)
+        and (.node_id | . == null or type == "string")
+        and (.name | . == null or type == "string")
+        and (.immutable | . == null or type == "boolean")
+        and (.updated_at | . == null or type == "string")
+    ) | [
         .id,
         .node_id,
         .tag_name,
@@ -150,8 +161,16 @@ if [[ "$(jq -r '.[0].id' "${state_root}/release-list-snapshot.json")" != "${rele
     exit 1
 fi
 
-readonly original_release_fingerprint="$(release_fingerprint "${state_root}/release-snapshot.json")"
-readonly original_tag_fingerprint="$(exact_tag_ref_fingerprint "${state_root}/tag-snapshot.json")"
+if ! original_release_fingerprint="$(release_fingerprint "${state_root}/release-snapshot.json")"; then
+    echo "error: unable to fingerprint latest release snapshot" >&2
+    exit 1
+fi
+readonly original_release_fingerprint
+if ! original_tag_fingerprint="$(exact_tag_ref_fingerprint "${state_root}/tag-snapshot.json")"; then
+    echo "error: unable to fingerprint latest tag snapshot" >&2
+    exit 1
+fi
+readonly original_tag_fingerprint
 
 # Re-read both objects before the first mutation. GitHub offers no conditional
 # DELETE for releases or refs, so this narrows but cannot eliminate an external
@@ -165,7 +184,11 @@ fi
 if optional_query \
     "repos/${repository}/releases/tags/${release_tag}" \
     "${state_root}/release-recheck.json"; then
-    if [[ "$(release_fingerprint "${state_root}/release-recheck.json")" != "${original_release_fingerprint}" ]]; then
+    if ! rechecked_release_fingerprint="$(release_fingerprint "${state_root}/release-recheck.json")"; then
+        echo "error: unable to fingerprint latest identity at release-recheck.json; stopping cleanup" >&2
+        exit 1
+    fi
+    if [[ "${rechecked_release_fingerprint}" != "${original_release_fingerprint}" ]]; then
         echo "error: latest release identity changed before deletion" >&2
         exit 1
     fi
@@ -180,7 +203,11 @@ fi
 if optional_query \
     "repos/${repository}/git/ref/tags/${release_tag}" \
     "${state_root}/tag-recheck-before-delete.json"; then
-    if [[ "$(exact_tag_ref_fingerprint "${state_root}/tag-recheck-before-delete.json")" != "${original_tag_fingerprint}" ]]; then
+    if ! rechecked_tag_fingerprint="$(exact_tag_ref_fingerprint "${state_root}/tag-recheck-before-delete.json")"; then
+        echo "error: unable to fingerprint latest identity at tag-recheck-before-delete.json; stopping cleanup" >&2
+        exit 1
+    fi
+    if [[ "${rechecked_tag_fingerprint}" != "${original_tag_fingerprint}" ]]; then
         echo "error: latest tag object changed before deletion" >&2
         exit 1
     fi
@@ -202,7 +229,11 @@ for attempt in 1 2; do
     if optional_query \
         "repos/${repository}/releases/${release_id}" \
         "${state_root}/release-after-delete-${attempt}.json"; then
-        if [[ "$(release_fingerprint "${state_root}/release-after-delete-${attempt}.json")" != "${original_release_fingerprint}" ]]; then
+        if ! surviving_release_fingerprint="$(release_fingerprint "${state_root}/release-after-delete-${attempt}.json")"; then
+            echo "error: unable to fingerprint latest identity at release-after-delete-${attempt}.json; stopping cleanup" >&2
+            exit 1
+        fi
+        if [[ "${surviving_release_fingerprint}" != "${original_release_fingerprint}" ]]; then
             echo "error: exact latest release changed after an ambiguous delete; refusing retry" >&2
             exit 1
         fi
@@ -223,7 +254,11 @@ for attempt in 1 2; do
             echo "error: latest tag lookup failed before delete retry (status ${query_status})" >&2
             exit 1
         fi
-        if [[ "$(exact_tag_ref_fingerprint "${state_root}/tag-before-delete-retry.json")" != "${original_tag_fingerprint}" ]]; then
+        if ! retry_tag_fingerprint="$(exact_tag_ref_fingerprint "${state_root}/tag-before-delete-retry.json")"; then
+            echo "error: unable to fingerprint latest identity at tag-before-delete-retry.json; stopping cleanup" >&2
+            exit 1
+        fi
+        if [[ "${retry_tag_fingerprint}" != "${original_tag_fingerprint}" ]]; then
             echo "error: latest tag changed before delete retry" >&2
             exit 1
         fi
@@ -256,7 +291,11 @@ fi
 if optional_query \
     "repos/${repository}/git/ref/tags/${release_tag}" \
     "${state_root}/tag-after-release-delete.json"; then
-    if [[ "$(exact_tag_ref_fingerprint "${state_root}/tag-after-release-delete.json")" != "${original_tag_fingerprint}" ]]; then
+    if ! remaining_tag_fingerprint="$(exact_tag_ref_fingerprint "${state_root}/tag-after-release-delete.json")"; then
+        echo "error: unable to fingerprint latest identity at tag-after-release-delete.json; stopping cleanup" >&2
+        exit 1
+    fi
+    if [[ "${remaining_tag_fingerprint}" != "${original_tag_fingerprint}" ]]; then
         echo "error: latest tag object changed after release deletion; preserving it" >&2
         exit 1
     fi
@@ -276,7 +315,11 @@ for attempt in 1 2; do
     if optional_query \
         "repos/${repository}/git/ref/tags/${release_tag}" \
         "${state_root}/tag-after-delete-${attempt}.json"; then
-        if [[ "$(exact_tag_ref_fingerprint "${state_root}/tag-after-delete-${attempt}.json")" != "${original_tag_fingerprint}" ]]; then
+        if ! surviving_tag_fingerprint="$(exact_tag_ref_fingerprint "${state_root}/tag-after-delete-${attempt}.json")"; then
+            echo "error: unable to fingerprint latest identity at tag-after-delete-${attempt}.json; stopping cleanup" >&2
+            exit 1
+        fi
+        if [[ "${surviving_tag_fingerprint}" != "${original_tag_fingerprint}" ]]; then
             echo "error: latest tag changed after an ambiguous delete; preserving it" >&2
             exit 1
         fi

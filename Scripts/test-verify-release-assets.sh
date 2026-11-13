@@ -91,6 +91,9 @@ reset_state() {
         "${state_directory}/patch-publish-count" \
         "${state_directory}/patch-retag-count" \
         "${state_directory}/tag-ref-query-count" \
+        "${state_directory}/release-delete-count" \
+        "${state_directory}/tag-delete-count" \
+        "${state_directory}/api.log" \
         "${state_directory}/uploads.txt"
 }
 
@@ -135,6 +138,129 @@ cp "${script_directory}/fixtures/fake-gh-release.sh" "${fake_bin}/gh"
 cp "${script_directory}/fixtures/fake-curl-release.sh" "${fake_bin}/curl"
 chmod +x "${fake_bin}/gh"
 chmod +x "${fake_bin}/curl"
+
+# Fingerprint errors must stop the real cleanup scripts at the failing boundary.
+# The API fixture logs requests, including failed attempts, so an unchanged
+# final object cannot hide an unsafe DELETE/PATCH or retry.
+regression_failures=0
+regression_fail() {
+    echo "release regression failed: $*" >&2
+    regression_failures="$((regression_failures + 1))"
+}
+
+expect_mutations() {
+    local expected="$1"
+    local actual
+    actual="$(sed -n '/^DELETE /p; /^PATCH /p' "${state_directory}/api.log")"
+    if [[ "${actual}" != "${expected}" ]]; then
+        regression_fail "${regression_case}: mutation trace was [${actual}], want [${expected}]"
+    fi
+}
+
+for helper in exact_tag_ref_fingerprint peel_exact_tag_ref_to_commit; do
+    for object_type in commit tag; do
+        reset_state
+        regression_case="${helper} conditional malformed ${object_type} SHA"
+        printf '{"object":{"type":"%s","sha":"invalid"}}\n' "${object_type}" >"${state_directory}/invalid-ref.json"
+        if run_with_fake_gh bash -c '
+            set -euo pipefail
+            source "$1/lib/github-release.sh"
+            if [[ "$2" == exact_tag_ref_fingerprint ]]; then
+                if value="$(exact_tag_ref_fingerprint "$3/invalid-ref.json")"; then exit 0; fi
+            else
+                if value="$(peel_exact_tag_ref_to_commit "$4" "$3/invalid-ref.json" "$3")"; then exit 0; fi
+            fi
+            exit 1
+        ' bash "${script_directory}" "${helper}" "${state_directory}" "${repository}" >/dev/null 2>&1; then
+            regression_fail "${regression_case}: helper reported success"
+        fi
+        : >>"${state_directory}/api.log"
+        expect_mutations ""
+    done
+done
+
+for regression_script in "${latest_delete}" "${draft_cleanup}"; do
+    for fingerprint_case in unsupported-snapshot malformed-snapshot malformed-release unsupported-recheck malformed-recheck unsupported-after-release; do
+        reset_state
+        tag=latest
+        if [[ "${regression_script}" == "${draft_cleanup}" ]]; then tag="${release_tag}"; fi
+        write_release_state false "${tag}" "${expected_commit}"
+        write_tag_state "${expected_commit}"
+        mutation_query=0
+        mutated_type=blob
+        mutated_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        expected_mutations=""
+        case "${fingerprint_case}" in
+            unsupported-snapshot)
+                jq '.type = "blob"' "${state_directory}/tag.json" >"${state_directory}/tag.next.json"
+                mv "${state_directory}/tag.next.json" "${state_directory}/tag.json"
+                mutation_query=2
+                ;;
+            malformed-snapshot)
+                jq '.sha = "invalid"' "${state_directory}/tag.json" >"${state_directory}/tag.next.json"
+                mv "${state_directory}/tag.next.json" "${state_directory}/tag.json"
+                ;;
+            malformed-release)
+                jq '.name = []' "${state_directory}/release.json" >"${state_directory}/release.next.json"
+                mv "${state_directory}/release.next.json" "${state_directory}/release.json"
+                ;;
+            unsupported-recheck) mutation_query=2 ;;
+            malformed-recheck) mutation_query=2; mutated_type=commit; mutated_sha=invalid ;;
+            unsupported-after-release)
+                mutation_query=3
+                expected_mutations="DELETE repos/${repository}/releases/${release_id}"
+                ;;
+        esac
+        regression_case="$(basename "${regression_script}") ${fingerprint_case}"
+        script_arguments=("${repository}")
+        if [[ "${regression_script}" == "${draft_cleanup}" ]]; then
+            script_arguments+=("${release_id}" "${tag}" "${expected_commit}")
+        fi
+        if run_with_fake_gh env \
+            FORGERULES_TEST_MUTATE_TAG_ON_REF_QUERY="${mutation_query}" \
+            FORGERULES_TEST_MUTATED_TAG_TYPE="${mutated_type}" \
+            FORGERULES_TEST_MUTATED_TAG_SHA="${mutated_sha}" \
+            "${regression_script}" "${script_arguments[@]}" >/dev/null 2>&1; then
+            regression_fail "${regression_case}: cleanup reported success"
+        fi
+        expect_mutations "${expected_mutations}"
+        if [[ ! -e "${state_directory}/tag.json" ]]; then
+            regression_fail "${regression_case}: failed fingerprint did not preserve the remaining ref"
+        fi
+        if [[ -z "${expected_mutations}" && ! -e "${state_directory}/release.json" ]]; then
+            regression_fail "${regression_case}: failed snapshot/recheck did not preserve the release"
+        fi
+    done
+done
+
+# Failed fingerprint rechecks also stop ambiguous latest-delete retries.
+for delete_kind in release tag; do
+    reset_state
+    write_release_state false latest "${expected_commit}"
+    write_tag_state "${expected_commit}"
+    mutation_query=3
+    expected_mutations="DELETE repos/${repository}/releases/${release_id}"
+    if [[ "${delete_kind}" == tag ]]; then
+        mutation_query=4
+        expected_mutations+=$'\n'"DELETE repos/${repository}/git/refs/tags/latest"
+    fi
+    regression_case="latest ${delete_kind} delete retry fingerprint failure"
+    if run_with_fake_gh env \
+        FORGERULES_TEST_DELETE_ERROR_BEFORE_MUTATION="${delete_kind}" \
+        FORGERULES_TEST_MUTATE_TAG_ON_REF_QUERY="${mutation_query}" \
+        FORGERULES_TEST_MUTATED_TAG_TYPE=blob \
+        "${latest_delete}" "${repository}" >/dev/null 2>&1; then
+        regression_fail "${regression_case}: cleanup reported success"
+    fi
+    expect_mutations "${expected_mutations}"
+    if [[ ! -e "${state_directory}/tag.json" ]]; then
+        regression_fail "${regression_case}: remaining ref was not preserved"
+    fi
+done
+
+if [[ "${regression_failures}" -ne 0 ]]; then
+    fail "${regression_failures} fingerprint regression assertions failed"
+fi
 
 # Draft creation is a fresh REST POST. It records the returned ID before
 # uploads and refuses to upsert an existing draft.
@@ -482,6 +608,15 @@ fi
 # Cleanup accepts either owned stage name for the exact latest release ID, but
 # an unlisted tag or changed target fails before mutation.
 reset_state
+write_release_state true "${staging_tag}" "${expected_commit}"
+run_with_fake_gh "${draft_cleanup}" "${repository}" "${release_id}" "${staging_tag}" "${expected_commit}" latest >/dev/null
+if [[ -e "${state_directory}/release.json" ]]; then
+    fail "genuine unpublished staging draft was not removed"
+fi
+regression_case="unpublished staging cleanup"
+expect_mutations "DELETE repos/${repository}/releases/${release_id}"
+
+reset_state
 write_release_state true latest "${expected_commit}"
 run_with_fake_gh \
     "${draft_cleanup}" \
@@ -548,8 +683,8 @@ if [[ ! -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.jso
     fail "different published release state changed during refused cleanup"
 fi
 
-# A valid failed publication is withdrawn release-first, then its still-stable
-# exact ref is deleted. Ambiguous DELETE responses are reconciled by absence.
+# A published dated identity remains reserved after withdrawal, including an
+# ambiguous release DELETE. A different revision cannot recreate that name.
 reset_state
 write_release_state false "${release_tag}" "${expected_commit}"
 write_tag_state "${expected_commit}"
@@ -559,8 +694,19 @@ run_with_fake_gh \
     "${release_id}" \
     "${release_tag}" \
     "${expected_commit}" >/dev/null
-if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
-    fail "verified failed publication state was not removed"
+if [[ -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "published dated release withdrawal did not retain its reservation"
+fi
+regression_case="published dated withdrawal"
+expect_mutations "DELETE repos/${repository}/releases/${release_id}"
+if run_with_fake_gh env GH_TOKEN=test-token GITHUB_OUTPUT="${github_output}" \
+    FORGERULES_TEST_NEXT_RELEASE_ID=202 \
+    "${creator}" "${repository}" "${release_tag}" "Different revision" \
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "${artifact_directory}" >/dev/null 2>&1; then
+    fail "withdrawn dated name was recreated at a different commit"
+fi
+if [[ -e "${state_directory}/release.json" || "$(jq -r '.sha' "${state_directory}/tag.json")" != "${expected_commit}" ]]; then
+    fail "failed same-name recreation changed the dated reservation"
 fi
 
 reset_state
@@ -575,8 +721,63 @@ PATH="${fake_bin}:${PATH}" \
     "${release_id}" \
     "${release_tag}" \
     "${expected_commit}" >/dev/null 2>&1
-if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
+if [[ -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
     fail "ambiguous published-release delete was not reconciled"
+fi
+regression_case="ambiguous published dated withdrawal"
+expect_mutations "DELETE repos/${repository}/releases/${release_id}"
+
+# Mutable latest cleanup retains its original verified release/ref deletion.
+reset_state
+write_release_state false latest "${expected_commit}"
+write_annotated_tag_state "${expected_commit}"
+run_with_fake_gh "${draft_cleanup}" "${repository}" "${release_id}" latest "${expected_commit}" >/dev/null
+if [[ -e "${state_directory}/release.json" || -e "${state_directory}/tag.json" ]]; then
+    fail "verified mutable latest cleanup did not remove its release/ref pair"
+fi
+
+# A published dated release without a reservation cannot report safe cleanup.
+reset_state
+write_release_state false "${release_tag}" "${expected_commit}"
+if run_with_fake_gh "${draft_cleanup}" "${repository}" "${release_id}" "${release_tag}" "${expected_commit}" >/dev/null 2>&1; then
+    fail "missing published dated reservation was accepted"
+fi
+regression_case="missing published dated reservation"
+expect_mutations ""
+if [[ ! -e "${state_directory}/release.json" ]]; then
+    fail "missing published dated reservation triggered release deletion"
+fi
+
+for disappearance_query in 2 3; do
+    reset_state
+    write_release_state false "${release_tag}" "${expected_commit}"
+    write_tag_state "${expected_commit}"
+    if run_with_fake_gh env FORGERULES_TEST_REMOVE_TAG_ON_REF_QUERY="${disappearance_query}" \
+        "${draft_cleanup}" "${repository}" "${release_id}" "${release_tag}" "${expected_commit}" >/dev/null 2>&1; then
+        fail "disappearing dated reservation at query ${disappearance_query} was accepted"
+    fi
+    expected_mutations=""
+    if [[ "${disappearance_query}" -eq 3 ]]; then
+        expected_mutations="DELETE repos/${repository}/releases/${release_id}"
+    fi
+    regression_case="dated reservation disappearance at query ${disappearance_query}"
+    expect_mutations "${expected_mutations}"
+done
+
+# Annotated dated reservations retain their raw object, not only the commit.
+reset_state
+write_release_state false "${release_tag}" "${expected_commit}"
+write_annotated_tag_state "${expected_commit}"
+cp "${state_directory}/tag.json" "${state_directory}/reserved-tag.json"
+run_with_fake_gh "${draft_cleanup}" "${repository}" "${release_id}" "${release_tag}" "${expected_commit}" >/dev/null
+if [[ -e "${state_directory}/release.json" ]] || ! cmp -s "${state_directory}/tag.json" "${state_directory}/reserved-tag.json"; then
+    fail "published annotated dated reservation changed during withdrawal"
+fi
+regression_case="annotated published dated withdrawal"
+expect_mutations "DELETE repos/${repository}/releases/${release_id}"
+
+if [[ "${regression_failures}" -ne 0 ]]; then
+    fail "${regression_failures} dated reservation mutation assertions failed"
 fi
 
 # If the public association or raw ref changes, the exact fresh release is
@@ -613,9 +814,11 @@ if PATH="${fake_bin}:${PATH}" \
     "${expected_commit}" >/dev/null 2>&1; then
     fail "published cleanup treated unavailable tag evidence as sufficient"
 fi
-if [[ -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
-    fail "tag-evidence API failure prevented exact public release withdrawal"
+if [[ ! -e "${state_directory}/release.json" || ! -e "${state_directory}/tag.json" ]]; then
+    fail "tag-evidence API failure mutated objects before fingerprint validation"
 fi
+regression_case="unavailable published dated fingerprint"
+expect_mutations ""
 
 reset_state
 write_release_state false "${release_tag}" "${expected_commit}"
@@ -768,6 +971,10 @@ if PATH="${fake_bin}:${PATH}" \
     FORGERULES_TEST_API_ERROR_STATUS=4 \
     "${latest_delete}" "${repository}" >/dev/null 2>&1; then
     fail "gh authentication exit status 4 was mistaken for the 404 sentinel"
+fi
+
+if [[ "${regression_failures}" -ne 0 ]]; then
+    fail "${regression_failures} release mutation assertions failed"
 fi
 
 echo "Fresh-ID draft, PATCH reconciliation, safe cleanup, and latest replacement tests passed"
