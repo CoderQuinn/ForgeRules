@@ -50,6 +50,31 @@ if [[ -z "${output_file}" || -z "${data_file}" || -z "${endpoint}" ]]; then
     exit 64
 fi
 
+printf '%s %s\n' "${method}" "${endpoint}" >>"${FORGERULES_TEST_STATE_DIR}/curl.log"
+if [[ -n "${FORGERULES_TEST_CURL_PLAN:-}" ]]; then
+    ordinal="$(awk -v request="${method} ${endpoint}" '$0 == request { n++ } END { print n + 0 }' "${FORGERULES_TEST_STATE_DIR}/curl.log")"
+    action="$(jq -c --arg method "${method}" --arg endpoint "${endpoint}" --argjson ordinal "${ordinal}" \
+        '.[] | select(.method == $method and .endpoint == $endpoint and .on == $ordinal)' "${FORGERULES_TEST_CURL_PLAN}")"
+    if [[ -n "${action}" ]]; then
+        if jq -e 'has("mutate_release")' <<<"${action}" >/dev/null; then
+            original='{}'
+            if [[ -f "${release_file}" ]]; then original="$(cat "${release_file}")"; fi
+            jq -n --argjson original "${original}" --argjson action "${action}" \
+                '$original + $action.mutate_release' >"${release_file}"
+        fi
+        if jq -e 'has("error")' <<<"${action}" >/dev/null; then jq -r '.error' <<<"${action}" >&2; fi
+        if jq -e 'has("raw")' <<<"${action}" >/dev/null; then
+            jq -r '.raw' <<<"${action}" >"${output_file}"
+        elif jq -e 'has("response")' <<<"${action}" >/dev/null; then
+            jq -c '.response' <<<"${action}" >"${output_file}"
+        fi
+        if jq -e 'has("response") or has("raw") or has("status") or has("exit")' <<<"${action}" >/dev/null; then
+            printf '%s' "$(jq -r '.status // 201' <<<"${action}")"
+            exit "$(jq -r '.exit // 0' <<<"${action}")"
+        fi
+    fi
+fi
+
 if [[ "${method}" == "POST" && "${endpoint}" =~ ^https://api\.github\.com/repos/[^/]+/[^/]+/releases$ ]]; then
     if [[ -f "${release_file}" ]]; then
         jq -n '{message: "Validation Failed", errors: [{code: "already_exists"}]}' >"${output_file}"

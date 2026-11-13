@@ -121,6 +121,45 @@ emit_release() {
     esac
 }
 
+# Ordered local API faults. The suite supplies literal responses and explicit
+# external-writer changes; the production scripts still decide every mutation.
+if [[ -n "${FORGERULES_TEST_API_PLAN:-}" ]]; then
+    request_ordinal="$(awk -v request="${method} ${endpoint}" '$0 == request { n++ } END { print n + 0 }' "${FORGERULES_TEST_STATE_DIR}/api.log")"
+    action="$(jq -c \
+        --arg method "${method}" --arg endpoint "${endpoint}" --argjson ordinal "${request_ordinal}" \
+        '.[] | select(.method == $method and .endpoint == $endpoint and .on == $ordinal)' \
+        "${FORGERULES_TEST_API_PLAN}")"
+    if [[ -n "${action}" ]]; then
+        for object in release tag; do
+            object_file="${FORGERULES_TEST_STATE_DIR}/${object}.json"
+            if jq -e --arg key "remove_${object}" '.[$key] == true' <<<"${action}" >/dev/null; then
+                rm -f "${object_file}"
+            fi
+            if jq -e --arg key "mutate_${object}" 'has($key)' <<<"${action}" >/dev/null; then
+                original='{}'
+                if [[ -f "${object_file}" ]]; then original="$(cat "${object_file}")"; fi
+                jq -n --argjson original "${original}" --argjson action "${action}" \
+                    --arg key "mutate_${object}" '$original + $action[$key]' >"${object_file}"
+            fi
+        done
+        if jq -e 'has("error")' <<<"${action}" >/dev/null; then
+            jq -r '.error' <<<"${action}" >&2
+        fi
+        if jq -e 'has("raw")' <<<"${action}" >/dev/null; then
+            jq -r '.raw' <<<"${action}"
+        elif jq -e 'has("response")' <<<"${action}" >/dev/null; then
+            if [[ -n "${jq_filter}" ]]; then
+                jq -r --argjson action "${action}" ".response | ${jq_filter}" <<<"${action}"
+            else
+                jq -c '.response' <<<"${action}"
+            fi
+        fi
+        if jq -e 'has("response") or has("raw") or has("status")' <<<"${action}" >/dev/null; then
+            exit "$(jq -r '.status // 0' <<<"${action}")"
+        fi
+    fi
+fi
+
 if [[ "${method}" == "PATCH" && "${endpoint}" =~ /releases/([0-9]+)$ ]]; then
     if [[ ! -f "${release_file}" || "$(release_id_from_state)" != "${BASH_REMATCH[1]}" ]]; then
         not_found
