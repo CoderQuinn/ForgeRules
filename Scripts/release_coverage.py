@@ -16,6 +16,7 @@ from functools import lru_cache
 
 BASE = "1dc34fed52480cad816843e66495461a3058dbef"
 MINIMUM = 95.0
+HOOK = Path(__file__).resolve().parent / "coverage/release-trace-hook.sh"
 PARSER_VERSION = "v3.12.0"
 EXECUTABLE = {"CallExpr", "DeclClause", "TestClause", "ArithmCmd", "LetClause",
               "ForClause", "CaseClause", "TimeClause", "CoprocClause"}
@@ -207,7 +208,7 @@ def summarize(root, sources, hits, changed):
     if sources != snapshot(root):
         raise CoverageError("stale or incomplete source snapshot")
     files = []
-    groups = {name: [set(), set()] for name in ("production", "changed_production", "support", "changed_support")}
+    groups = {name: [set(), set()] for name in ("production", "changed_production", "support", "changed_support", "tooling", "changed_tooling")}
     for name in sources:
         if not name.endswith(".sh"):
             continue
@@ -229,7 +230,7 @@ def summarize(root, sources, hits, changed):
             for site in candidates:
                 covered.update(site["rows"])
         support = "/fixtures/" in name or Path(name).name.startswith("test-")
-        group = "support" if support else "production"
+        group = "tooling" if name == "Scripts/coverage/release-trace-hook.sh" else ("support" if support else "production")
         added = owned & changed.get(name, set())
         files.append({"path": name, "scope": group, **fraction(covered, owned),
                       "owned": sorted(owned), "covered_rows": sorted(covered),
@@ -355,41 +356,12 @@ def collect(root, directory, entry, base):
     directory.mkdir(parents=True, exist_ok=False)
     (directory / "temporary-events").mkdir()
     helper = directory / "trace-environment.sh"
-    helper.write_text('''# Native Bash tracing. Every event hashes its actual source; no identity cache.
-if [[ "$BASH_VERSION" != 5.3.15\\(* ]]; then
-    printf "%s\\n" "$BASH_VERSION" >"${FORGERULES_COVERAGE_EVENTS}/${BASHPID:-$$}.unsupported"
-    return 0
-fi
-set -T
-trap '__forge_source="${BASH_SOURCE[0]-}" __forge_row="$LINENO" __forge_command="$BASH_COMMAND" __forge_fn="${FUNCNAME[0]-}"
-__forge_sha="missing"
-set +T
-if [[ -n "$__forge_source" && -f "$__forge_source" ]]; then
-    if __forge_sha="$(/usr/bin/openssl dgst -sha256 -r "$__forge_source" 2>/dev/null)"; then
-        __forge_sha="${__forge_sha%% *}"
-    else
-        __forge_sha="missing"
-    fi
-fi
-__forge_definition_id=""
-if [[ -n "$__forge_fn" ]]; then
-    if __forge_definition="$(declare -f "$__forge_fn")"; then
-        __forge_definition_id="$(printf "%s" "$__forge_definition" | /usr/bin/openssl dgst -sha256 -r)"
-        __forge_definition_id="${__forge_definition_id%% *}"
-        if [[ ! -f "${FORGERULES_COVERAGE_EVENTS}/${__forge_definition_id}.definition" ]]; then
-            printf "%s" "$__forge_definition" >"${FORGERULES_COVERAGE_EVENTS}/${__forge_definition_id}.definition"
-        fi
-    elif [[ "$__forge_fn" == source || "$__forge_fn" == main ]]; then
-        __forge_fn=""
-    fi
-fi
-set -T
-printf "%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0" "${__forge_source:-@bash-c:$0}" "$__forge_row" "$__forge_command" "$__forge_sha" "$BASH_VERSION" "$__forge_fn" "$__forge_definition_id" >>"${FORGERULES_COVERAGE_EVENTS}/${BASHPID}.events"' DEBUG
-''')
+    shutil.copyfile(HOOK, helper)
     started = time.time_ns()
     environment = os.environ.copy()
     environment.update({"PATH": str(Path(bash).parent) + os.pathsep + environment["PATH"],
-                        "BASH_ENV": str(helper), "FORGERULES_COVERAGE_EVENTS": str(directory / "temporary-events")})
+                        "BASH_ENV": str(helper), "FORGERULES_COVERAGE_EVENTS": str(directory / "temporary-events"),
+                        "FORGERULES_COVERAGE_HASHER": "/usr/bin/openssl"})
     command = [bash, str(root / entry)]
     with (directory / "run.log").open("wb") as log:
         result = subprocess.run(command, shell=False, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT)

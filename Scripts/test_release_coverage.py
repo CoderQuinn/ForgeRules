@@ -452,6 +452,14 @@ mv saved Scripts/lib.sh
             with self.assertRaisesRegex(self.collector.CoverageError, "ambiguous runtime function"):
                 self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
 
+    def test_authored_hook_is_a_first_class_source(self):
+        hook = ROOT / "Scripts/coverage/release-trace-hook.sh"
+        self.assertTrue(hook.is_file(), "authored Bash hook is hidden inside a Python literal")
+        source = hook.read_bytes()
+        owned = {row for site in self.collector.command_sites(source) for row in site["rows"]}
+        self.assertGreater(len(owned), 20)
+        self.assertIn(b"_forgerules_emit_debug", source)
+
 
 def executable_lines(path):
     """Use CPython compiler line tables, including nested function code."""

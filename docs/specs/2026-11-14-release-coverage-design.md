@@ -55,3 +55,7 @@ Current disk bytes alone do not identify a previously loaded function. Every kno
 Trace format 3 requires this function context in addition to source SHA and actual Bash version. Bases are resolved option-safely to one canonical commit OID before collection or diff calculation. Flags and noncommits fail before an evidence directory is created. Bash's equivalent default `>&2` and explicit `1>&2` spelling is normalized only after a fixture proves identical process output and exit behavior; no release condition or identity check changes.
 
 The generated hook remains a separate authored-Bash collector scope whose own coverage is still open at this checkpoint; a passing Python collector percentage does not close it.
+
+## First-class Bash hook checkpoint
+
+The executable hook is authored in `Scripts/coverage/release-trace-hook.sh`; the collector copies its exact bytes to the evidence helper. It uses a named Bash callback so its body is visible to the syntax parser. It is collector tooling, separately inventoried with a mandatory Bash coverage gate; it is never mixed into release-operational production or test-support totals. All provenance and status-parity tests remain required. Independent hook xtrace measurement remains open until its dedicated fixture/evidence implementation is complete.
