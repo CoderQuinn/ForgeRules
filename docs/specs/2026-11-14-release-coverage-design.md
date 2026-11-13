@@ -37,9 +37,12 @@ The collector's Python executable rows use CPython compiler line tables recursiv
 Put the pinned Bash and shfmt binaries on `PATH`, or provide `SHFMT` for the parser. No global shell/profile change is required.
 
 ```bash
-FORGERULES_PYTHON_COVERAGE=/tmp/collector-coverage.json python3 Scripts/test_release_coverage.py
+FORGERULES_PYTHON_COVERAGE=/tmp/collector-coverage.json \
+FORGERULES_HOOK_COVERAGE=/tmp/hook-coverage.json \
+python3 Scripts/test_release_coverage.py
 python3 Scripts/release_coverage.py collect /tmp/release-trace --entry Scripts/test-verify-release-assets.sh
-python3 Scripts/release_coverage.py report /tmp/release-trace > /tmp/release-coverage.json
+python3 Scripts/release_coverage.py report /tmp/release-trace \
+  --hook-evidence /tmp/hook-coverage.json > /tmp/release-coverage.json
 ```
 
 The report command enforces the production and added-production Bash thresholds. It must be paired with the collector test/coverage command above; a Bash percentage cannot replace the collector's separate gate. Multiple `collect` directories may be supplied to `report` to union actual events. Each directory must use the current identical source manifest and revision; changed sources require fresh collection. Release mutation tests use only local fake-gh/fake-curl fixtures and literal ordered endpoint/ordinal faults.
@@ -73,3 +76,7 @@ Reviewed block and while-container redirect support includes each executable red
 A marker append can itself fail. Collection now precreates an unpredictable regular-file success latch and keeps its exact bytes and file identity in collector memory. Every event, definition or unsupported-version write failure unlinks that latch before attempting the auxiliary failure append. The callback still returns zero so target status and effects are preserved. Finalization and later evidence loading require the original latch identity/bytes and empty hashed failure state. Prior valid events cannot rescue a missing or changed latch. Format 4 binds these controls; evidence directories are fresh and failed final writes are never reused as a successful result.
 
 The bounded guarantee covers ordinary append failures while the collector-owned evidence parent remains writable, including both event and marker files becoming read-only and later restoring their permissions. Permanent missing, read-only or full evidence storage fails required reads/final writes. A transient outage that simultaneously prevents append and latch unlink, then recovers without an observable control change before finalization, is not attested by this design. This is not arbitrary host or kernel tamper attestation.
+
+## Static process-boundary audit
+
+The collector and local fixtures use argv-only subprocess calls. The developer intentionally selects the repository entry and trusted parser/interpreter/hash tools; fixture commands are fixed local git verbs or authored synthetic Bash programs. The source carries narrowly scoped audit annotations only at actual Bandit B404/B603/B607 or exact Semgrep subprocess-audit matches, with adjacent trust rationale. The tainted-environment rule remains enabled, and no scanner configuration, source exclusion or repository security setting is weakened. Annotation-only changes retain identical Python ASTs; they require refreshed byte-hash provenance before final measurements.

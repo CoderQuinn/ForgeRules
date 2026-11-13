@@ -9,7 +9,8 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
+# Process trust boundaries are audited at the argv-only calls below.
+import subprocess  # nosec B404
 import sys
 import tempfile
 import trace
@@ -110,9 +111,12 @@ if false; then
 fi
 ''')
             probe.chmod(0o755)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            subprocess.run(["git", "-C", str(root), "add", "Scripts"], check=True)
-            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid.example", "commit", "-qm", "fixture"], check=True)
+            # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+            subprocess.run(["git", "init", "-q", str(root)], check=True)  # nosec B603, B607
+            # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+            subprocess.run(["git", "-C", str(root), "add", "Scripts"], check=True)  # nosec B603, B607
+            # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid.example", "commit", "-qm", "fixture"], check=True)  # nosec B603, B607
             environment = os.environ | {"FIXTURE_ROOT": str(root)}
             results = []
             for mode in ("plain", "traced"):
@@ -120,7 +124,8 @@ fi
                 output.mkdir()
                 environment["RESULT"] = str(output)
                 if mode == "plain":
-                    result = subprocess.run(["bash", str(probe)], env=environment, cwd=root)
+                    # The trusted developer PATH runs a locally authored fixture script without a command string.
+                    result = subprocess.run(["bash", str(probe)], env=environment, cwd=root)  # nosec B603, B607
                     self.assertEqual(result.returncode, 0)
                 else:
                     with mock.patch.dict(os.environ, environment):
@@ -128,7 +133,8 @@ fi
                 results.append({p.name: p.read_text() for p in output.iterdir()})
             self.assertEqual(results[0], {"sourced": "sourced", "child": "child", "direct": "direct", "cleanup": "cleaned"})
             self.assertEqual(results[0], results[1])
-            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()  # nosec B603, B607
             sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
             report = self.collector.summarize(root, sources, hits, {})
             files = {f["path"]: f for f in report["files"]}
@@ -190,7 +196,9 @@ fi
 
     def test_default_stdout_descriptor_is_semantically_equivalent(self):
         for source in ("echo failure >&2", "echo failure 1>&2"):
-            result = subprocess.run(["bash", "-c", source], capture_output=True, text=True, shell=False)
+            # Bash -c receives only the two authored descriptor-equivalence literals.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            result = subprocess.run(["bash", "-c", source], capture_output=True, text=True, shell=False)  # nosec B603, B607
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", "failure\n"))
         self.assertEqual(self.collector.syntax_fingerprint(b"echo failure >&2"),
                          self.collector.syntax_fingerprint(b"echo failure 1>&2"))
@@ -241,7 +249,8 @@ cat <(printf process) >out
 printf after
 '''})
             self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
-            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()  # nosec B603, B607
             sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
             report = self.collector.summarize(root, sources, hits, {})
             self.assertEqual((root / "summary").read_text(), "header\none:1\n")
@@ -277,7 +286,8 @@ done < "$(
 printf survived
 '''})
             self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
-            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()  # nosec B603, B607
             sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
             report = self.collector.summarize(root, sources, hits, {})
             self.assertEqual(report["files"][0]["covered_rows"], [1, 14, 20, 21])
@@ -314,7 +324,8 @@ printf survived
 later
 '''})
             self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
-            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()  # nosec B603, B607
             sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
             report = self.collector.summarize(root, sources, hits, {})
             self.assertEqual((root / "called").read_text(), "called")
@@ -490,9 +501,12 @@ later
         for name, body in files.items():
             (root / name).write_text(body)
             (root / name).chmod(0o755)
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        subprocess.run(["git", "-C", str(root), "add", "Scripts"], check=True)
-        subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid.example", "commit", "-qm", "fixture"], check=True)
+        # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+        subprocess.run(["git", "init", "-q", str(root)], check=True)  # nosec B603, B607
+        # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+        subprocess.run(["git", "-C", str(root), "add", "Scripts"], check=True)  # nosec B603, B607
+        # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid.example", "commit", "-qm", "fixture"], check=True)  # nosec B603, B607
 
     def test_external_source_cannot_borrow_the_main_script_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -503,7 +517,8 @@ later
             external.write_text('\nprintf wrongly_credited\n')
             with mock.patch.dict(os.environ, {"FIXTURE_EXTERNAL": str(external)}):
                 self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
-            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            # Fixed git verbs operate only on private local fixture repositories; developer PATH is trusted.
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()  # nosec B603, B607
             sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
             result = self.collector.summarize(root, sources, hits, {})
             self.assertIn(2, result["files"][0]["uncovered"])
@@ -525,7 +540,8 @@ mv saved Scripts/lib.sh
                 self.assertEqual((root / "Scripts/lib.sh").read_text(), 'if false; then\n printf wrongly_credited\nfi\n')
 
     def test_unsupported_child_interpreter_never_earns_coverage(self):
-        if "5.3.15(" in subprocess.check_output(["/bin/bash", "--version"], text=True):
+        # The absolute system Bash path receives only the fixed --version probe.
+        if "5.3.15(" in subprocess.check_output(["/bin/bash", "--version"], text=True):  # nosec B603
             self.skipTest("system Bash is the pinned interpreter")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -633,7 +649,8 @@ mv saved Scripts/lib.sh
                                     "FORGERULES_COVERAGE_FAILURE": str(plain / "write-failures"),
                                     "TARGET_STATUS": str(plain / "status")})
                 setup = ': > "$FORGERULES_COVERAGE_EVENTS/$BASHPID.events"\n: > "$FORGERULES_COVERAGE_FAILURE"\n'
-                result = subprocess.run(["/opt/homebrew/bin/bash", "-c", setup + body], env=environment,
+                # Bash -c receives only the local append-failure fixture assembled from fixed case literals.
+                result = subprocess.run(["/opt/homebrew/bin/bash", "-c", setup + body], env=environment,  # nosec B603
                                         shell=False, capture_output=True, text=True)
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "beforeafter", ""))
                 with mock.patch.dict(os.environ, {"TARGET_STATUS": str(root / "traced-status")}):
@@ -660,7 +677,9 @@ mv saved Scripts/lib.sh
         environment.update({"FORGERULES_COVERAGE_EVENTS": str(events), "FORGERULES_COVERAGE_HASHER": hasher,
                             "FORGERULES_COVERAGE_FAILURE": str(artifact / "write-failures"), "FORGERULES_COVERAGE_LATCH": str(latch),
                             "FORGE_META_PS4": "+FORGE_META_" + nonce + "\t${BASH_VERSION}\t${BASHPID:-$$}\t${BASH_SOURCE[0]:-$0}\t${LINENO}\t"})
-        version = subprocess.check_output([bash, "-c", 'printf "%s" "$BASH_VERSION"'], env=environment, text=True)
+        # The interpreter is selected from fixed fixture paths; Bash -c receives a constant version query.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        version = subprocess.check_output([bash, "-c", 'printf "%s" "$BASH_VERSION"'], env=environment, text=True)  # nosec B603
         results = []
         for mode in ("plain", "traced"):
             output = artifact / mode
@@ -675,7 +694,9 @@ mv saved Scripts/lib.sh
                     environment["BASH_XTRACEFD"] = str(trace_file.fileno())
                 else:
                     environment.pop("BASH_XTRACEFD", None)
-                result = subprocess.run(argv, env=environment, cwd=hook.parent, shell=False, stdout=subprocess.PIPE,
+                # Argv contains a fixed test interpreter and locally authored hook parity fixture only.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                result = subprocess.run(argv, env=environment, cwd=hook.parent, shell=False, stdout=subprocess.PIPE,  # nosec B603
                                         stderr=trace_file if mode == "traced" and version.startswith("3.") else subprocess.PIPE,
                                         pass_fds=(trace_file.fileno(),), timeout=30)
             stderr = result.stderr
@@ -721,7 +742,8 @@ printf product'''
             with self.subTest(label=label):
                 record = self.run_hook_meta(hook, program, label, hasher=hasher, virtual=virtual)
                 HOOK_RUNS.append(record)
-        if "5.3.15(" not in subprocess.check_output(["/bin/bash", "--version"], text=True):
+        # The absolute system Bash path receives only the fixed --version probe.
+        if "5.3.15(" not in subprocess.check_output(["/bin/bash", "--version"], text=True):  # nosec B603
             HOOK_RUNS.append(self.run_hook_meta(hook, "printf product", "unsupported-child", bash="/bin/bash"))
         result = self.collector.hook_coverage({"runs": HOOK_RUNS, "tests_passed": True})
         self.assertTrue(result["passed"], result["uncovered"])
@@ -760,6 +782,18 @@ if __name__ == "__main__":
     runner = trace.Trace(count=True, trace=False)
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(CollectorTests)
     result = runner.runfunc(unittest.TextTestRunner(verbosity=2).run, suite)
+    hook_passed = True
+    if os.environ.get("FORGERULES_HOOK_COVERAGE"):
+        fixture = CollectorTests("test_independent_hook_profiles_preserve_program_effects")
+        fixture.setUp()
+        hook_data = {"runs": HOOK_RUNS, "tests_passed": result.wasSuccessful()}
+        if result.wasSuccessful():
+            hook_summary = runner.runfunc(fixture.collector.hook_coverage, hook_data)
+            hook_passed = hook_summary["passed"]
+            hook_data["summary"] = hook_summary
+        else:
+            hook_passed = False
+        Path(os.environ["FORGERULES_HOOK_COVERAGE"]).write_text(json.dumps(hook_data, indent=2) + "\n")
     collector_passed = True
     if os.environ.get("FORGERULES_PYTHON_COVERAGE") and COLLECTOR.exists():
         counts = runner.results().counts
@@ -780,4 +814,4 @@ if __name__ == "__main__":
             "python": sys.version, "success": result.wasSuccessful(), "files": files,
             "collector_passed": collector_passed,
         }, indent=2) + "\n")
-    sys.exit(0 if result.wasSuccessful() and collector_passed else 1)
+    sys.exit(0 if result.wasSuccessful() and collector_passed and hook_passed else 1)

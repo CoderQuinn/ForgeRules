@@ -8,7 +8,8 @@ import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
+# Process trust boundaries are audited at the argv-only calls below.
+import subprocess  # nosec B404
 import sys
 import time
 from functools import lru_cache
@@ -28,7 +29,9 @@ class CoverageError(Exception):
 
 
 def checked(command, **kwargs):
-    result = subprocess.run(command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+    # Internal argv selects trusted git/parser/hash tools; source data is passed on stdin.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    result = subprocess.run(command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)  # nosec B603
     if result.returncode:
         raise CoverageError("command failed: " + repr(command) + "\n" + result.stderr.decode())
     return result.stdout
@@ -473,7 +476,9 @@ def collect(root, directory, entry, base):
                         "FORGERULES_COVERAGE_LATCH": str(success)})
     command = [bash, str(root / entry)]
     with (directory / "run.log").open("wb") as log:
-        result = subprocess.run(command, shell=False, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT)
+        # Pinned Bash executes the explicitly selected repository entry as a separate argv operand.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(command, shell=False, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT)  # nosec B603
     if sources != snapshot(root):
         raise CoverageError("source changed during trace collection")
     events = finalize_events(root, directory, sources, latch)
