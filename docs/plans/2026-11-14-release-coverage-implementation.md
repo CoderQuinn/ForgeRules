@@ -23,3 +23,5 @@ Gate whole operational production Bash, added production rows since PR17, and ne
 The collector and its negative/parity fixtures are reviewed separately before final fault-suite integration. Production and added-production Bash gates remain open until all suites are frozen and recollected against the exact final commit. See the design for ownership, native syntax hashes, conservative ambiguity/EXIT behavior, provenance binding and separate Python tooling gate.
 
 Independent collector review requested corrections for actual sourced-file identity, transient source changes, per-child Bash pinning and redirect-only ownership. The fix slice retains RED evidence and separate re-review before final collection. All earlier numeric release reports are diagnostic, not qualification.
+
+The next correction binds runtime loaded definitions to the exact enclosing source function, rejects ambiguous same-name declarations and canonicalizes the base commit before evidence creation. Cached-function/removed-guard and invalid-base RED cases precede this implementation. Extracted-hook measurement and whole-production gates remain open.

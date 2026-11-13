@@ -47,3 +47,11 @@ The report command enforces the production and added-production Bash thresholds.
 ## Collector review corrections
 
 Independent review of the first checkpoint reproduced three false-positive risks: `$0` hashes misattributed an external sourced file; unchecked in-repository event identity accepted transient source mutation; parent-only version attestation accepted a Bash 3.2 child. It also found an omitted redirect-only denominator row. All were reproduced as failing tests before correction, including a repeated-source mutation case. Prior checkpoint coverage percentages are diagnostic and do not qualify release orchestration. Trace format 2 retains and checks source SHA-256 and actual Bash version in every event; all final evidence must be freshly collected with the corrected tool.
+
+## Loaded functions and revision identity
+
+Current disk bytes alone do not identify a previously loaded function. Every known-source function event also records an interned runtime `declare -f` definition. The collector validates its normalized definition against the approved source and binds a credited site to its specific enclosing `FuncDecl`. Multiple same-name definitions in one source are rejected as ambiguous. This rejects definition-only transient loading followed by file restoration, including changed or removed guards. Repeated raw definition text is interned by SHA-256 before finalization; accepted events retain the normalized definition identity. This is bounded local evidence, not host tamper attestation.
+
+Trace format 3 requires this function context in addition to source SHA and actual Bash version. Bases are resolved option-safely to one canonical commit OID before collection or diff calculation. Flags and noncommits fail before an evidence directory is created. Bash's equivalent default `>&2` and explicit `1>&2` spelling is normalized only after a fixture proves identical process output and exit behavior; no release condition or identity check changes.
+
+The generated hook remains a separate authored-Bash collector scope whose own coverage is still open at this checkpoint; a passing Python collector percentage does not close it.

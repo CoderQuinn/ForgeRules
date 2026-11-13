@@ -52,6 +52,10 @@ def syntax_fingerprint(source):
         if isinstance(node, list):
             return [structural(child) for child in node]
         if isinstance(node, dict):
+            if node.get("Op") == 59 and node.get("N", {}).get("Value") == "1":
+                node = {key: value for key, value in node.items() if key != "N"}
+            if node.get("Type") == "FuncDecl":
+                node = {key: value for key, value in node.items() if key not in {"Parens", "RsrvWord"}}
             if node.get("Type") == "SglQuoted" and node.get("Dollar"):
                 # Bash deparses the authored $'\t' into a literal quoted tab.
                 # Normalize the two spellings without evaluating source code.
@@ -68,6 +72,34 @@ def syntax_fingerprint(source):
         return node
     canonical = json.dumps(structural(tree), sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+@lru_cache(maxsize=None)
+def function_definitions(source):
+    parser, _ = tool("shfmt", PARSER_VERSION)
+    tree = json.loads(checked([parser, "-ln", "bash", "--to-json"], input=source))
+    definitions = {}
+    def visit(node):
+        if isinstance(node, list):
+            for child in node:
+                visit(child)
+        elif isinstance(node, dict):
+            if node.get("Type") == "FuncDecl":
+                syntax = source[node["Pos"]["Offset"]:node["End"]["Offset"]]
+                definitions.setdefault(node["Name"]["Value"], []).append(syntax_fingerprint(syntax))
+            for child in node.values():
+                visit(child)
+    visit(tree)
+    return definitions
+
+
+def resolve_commit(root, value):
+    if not value or value.startswith("-"):
+        raise CoverageError("base must name a commit, not an option")
+    result = checked(["git", "rev-parse", "--verify", "--end-of-options", value + "^{commit}"], cwd=root).decode().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", result):
+        raise CoverageError("base did not resolve to one commit")
+    return result
 
 
 def command_sites(source):
@@ -90,11 +122,14 @@ def command_sites(source):
             rows.add(node["OpPos"]["Line"])
         return rows
 
-    def visit(node, substitutions=()):
+    def visit(node, substitutions=(), function=None):
         if isinstance(node, list):
             for child in node:
-                visit(child, substitutions)
+                visit(child, substitutions, function)
         elif isinstance(node, dict):
+            if node.get("Type") == "FuncDecl":
+                syntax = source[node["Pos"]["Offset"]:node["End"]["Offset"]]
+                function = {"name": node["Name"]["Value"], "fingerprint": syntax_fingerprint(syntax)}
             if node.get("Type") in {"CmdSubst", "ProcSubst"}:
                 substitutions += (node["End"]["Line"],)
             if "Cmd" not in node and node.get("Redirs"):
@@ -104,7 +139,7 @@ def command_sites(source):
                     rows.update(word_rows(redirect.get("Word")))
                 syntax = source[node["Pos"]["Offset"]:node["End"]["Offset"]]
                 sites.append({"kind": "RedirectOnly", "anchor": node["Pos"]["Line"], "rows": sorted(rows),
-                              "fingerprint": syntax_fingerprint(syntax),
+                              "fingerprint": syntax_fingerprint(syntax), "function": function,
                               "runtime_lines": sorted({node["Pos"]["Line"], node["End"]["Line"], *substitutions})})
             if "Cmd" in node:
                 command = node["Cmd"]
@@ -128,10 +163,10 @@ def command_sites(source):
                         syntax += b" " + source[redirect["Pos"]["Offset"]:redirect["End"]["Offset"]]
                     fingerprint = "control:" + kind if kind in {"ForClause", "CaseClause", "TimeClause", "CoprocClause"} else syntax_fingerprint(syntax)
                     sites.append({"kind": kind, "anchor": anchor, "rows": sorted(rows),
-                                  "fingerprint": fingerprint,
+                                  "fingerprint": fingerprint, "function": function,
                                   "runtime_lines": sorted({anchor, command["End"]["Line"], *substitutions})})
             for value in node.values():
-                visit(value, substitutions)
+                visit(value, substitutions, function)
     visit(tree)
     return sites
 
@@ -147,6 +182,7 @@ def snapshot(root):
 
 
 def changed_rows(root, base):
+    base = resolve_commit(root, base)
     diff = checked(["git", "diff", "--no-ext-diff", "--unified=0", base, "--", "Scripts"], cwd=root).decode()
     changed = {}
     current = None
@@ -180,8 +216,12 @@ def summarize(root, sources, hits, changed):
         sites = command_sites((root / name).read_bytes())
         owned = {line for site in sites for line in site["rows"]}
         covered, ambiguous = set(), []
-        for runtime, fingerprint in hits[name]:
-            candidates = [site for site in sites if runtime in site["runtime_lines"] and fingerprint == site["fingerprint"]]
+        for event in hits[name]:
+            runtime, fingerprint, *context = event
+            function_name, definition = context if context else ("", "")
+            function = {"name": function_name, "fingerprint": definition} if function_name else None
+            candidates = [site for site in sites if runtime in site["runtime_lines"]
+                          and fingerprint == site["fingerprint"] and function == site["function"]]
             if len({tuple(site["rows"]) for site in candidates}) > 1:
                 ambiguous.append({"runtime_row": runtime, "fingerprint": fingerprint,
                                   "candidate_anchors": sorted(site["anchor"] for site in candidates)})
@@ -223,10 +263,10 @@ def finalize_events(root, directory, sources):
         raise CoverageError("unsupported child Bash interpreter")
     for path in sorted((directory / "temporary-events").glob("*.events")):
         fields = path.read_bytes().split(b"\0")
-        if fields[-1] != b"" or (len(fields) - 1) % 5:
+        if fields[-1] != b"" or (len(fields) - 1) % 7:
             raise CoverageError("malformed native trace events")
-        for index in range(0, len(fields) - 1, 5):
-            source, row, command, source_sha, bash_version = fields[index:index + 5]
+        for index in range(0, len(fields) - 1, 7):
+            source, row, command, source_sha, bash_version, function_name, definition_id = fields[index:index + 7]
             if not bash_version.decode().startswith("5.3.15("):
                 raise CoverageError("unsupported event Bash interpreter")
             name = Path(source.decode())
@@ -244,10 +284,23 @@ def finalize_events(root, directory, sources):
                 continue
             if source_sha.decode() != sources[name]:
                 raise CoverageError("stale runtime source digest: " + name)
+            function_name = function_name.decode()
+            definition = ""
+            if function_name:
+                identity = definition_id.decode()
+                if not re.fullmatch(r"[0-9a-f]{64}", identity):
+                    raise CoverageError("missing runtime function definition")
+                declared = directory / "temporary-events" / (identity + ".definition")
+                if digest(declared) != identity:
+                    raise CoverageError("stale runtime function definition")
+                definition = syntax_fingerprint(declared.read_bytes())
+                approved = function_definitions((root / name).read_bytes()).get(function_name, [])
+                if approved != [definition]:
+                    raise CoverageError("unapproved or ambiguous runtime function definition: " + name + "/" + function_name)
             number = int(row)
             if number <= 0:
                 raise CoverageError("invalid native trace row")
-            events.add((name, number, event_fingerprint(command), source_sha.decode(), bash_version.decode()))
+            events.add((name, number, event_fingerprint(command), source_sha.decode(), bash_version.decode(), function_name, definition))
     if not events:
         raise CoverageError("missing native trace events")
     output = directory / "events.json"
@@ -265,21 +318,25 @@ def load_evidence(root, directories, base, head):
         if record["exit"] != 0 or record["finished_ns"] < record["started_ns"]:
             raise CoverageError("failed or incomplete trace run")
         if (record["parser"] != PARSER_VERSION or not record["bash"].startswith("GNU bash, version 5.3.15(")
-                or type(record["trace_format"]) is not int or record["trace_format"] != 2):
+                or type(record["trace_format"]) is not int or record["trace_format"] != 3):
             raise CoverageError("unsupported trace tool versions")
         if digest(directory / "trace-environment.sh") != record["helper_sha256"]:
             raise CoverageError("stale trace helper")
         events = directory / "events.json"
         if digest(events) != record["events_sha256"]:
             raise CoverageError("stale trace digest")
-        for name, row, fingerprint, runtime_sha, runtime_bash in json.loads(events.read_text())["events"]:
+        for name, row, fingerprint, runtime_sha, runtime_bash, function_name, definition in json.loads(events.read_text())["events"]:
             if name not in sources or runtime_sha != sources[name] or not runtime_bash.startswith("5.3.15("):
                 raise CoverageError("stale source digest or unsupported event Bash")
             if (name not in sources or not isinstance(row, int) or isinstance(row, bool) or row <= 0
                     or not isinstance(fingerprint, str)
                     or not re.fullmatch(r"[0-9a-f]{64}|control:(ForClause|CaseClause|TimeClause|CoprocClause)", fingerprint)):
                 raise CoverageError("malformed trace event")
-            hits.setdefault(name, set()).add((row, fingerprint))
+            if function_name and function_definitions((root / name).read_bytes()).get(function_name, []) != [definition]:
+                raise CoverageError("unapproved runtime function definition")
+            if not function_name and definition:
+                raise CoverageError("malformed runtime function context")
+            hits.setdefault(name, set()).add((row, fingerprint, function_name, definition))
         records.append(record)
     if not records:
         raise CoverageError("missing trace evidence")
@@ -291,6 +348,7 @@ def load_evidence(root, directories, base, head):
 
 def collect(root, directory, entry, base):
     root = root.resolve()
+    base = resolve_commit(root, base)
     _, parser_version = tool("shfmt", PARSER_VERSION)
     bash, bash_version = tool("bash", "5.3.15")
     sources = snapshot(root)
@@ -303,7 +361,7 @@ if [[ "$BASH_VERSION" != 5.3.15\\(* ]]; then
     return 0
 fi
 set -T
-trap '__forge_source="${BASH_SOURCE[0]-}" __forge_row="$LINENO" __forge_command="$BASH_COMMAND"
+trap '__forge_source="${BASH_SOURCE[0]-}" __forge_row="$LINENO" __forge_command="$BASH_COMMAND" __forge_fn="${FUNCNAME[0]-}"
 __forge_sha="missing"
 set +T
 if [[ -n "$__forge_source" && -f "$__forge_source" ]]; then
@@ -313,8 +371,20 @@ if [[ -n "$__forge_source" && -f "$__forge_source" ]]; then
         __forge_sha="missing"
     fi
 fi
+__forge_definition_id=""
+if [[ -n "$__forge_fn" ]]; then
+    if __forge_definition="$(declare -f "$__forge_fn")"; then
+        __forge_definition_id="$(printf "%s" "$__forge_definition" | /usr/bin/openssl dgst -sha256 -r)"
+        __forge_definition_id="${__forge_definition_id%% *}"
+        if [[ ! -f "${FORGERULES_COVERAGE_EVENTS}/${__forge_definition_id}.definition" ]]; then
+            printf "%s" "$__forge_definition" >"${FORGERULES_COVERAGE_EVENTS}/${__forge_definition_id}.definition"
+        fi
+    elif [[ "$__forge_fn" == source || "$__forge_fn" == main ]]; then
+        __forge_fn=""
+    fi
+fi
 set -T
-printf "%s\\0%s\\0%s\\0%s\\0%s\\0" "${__forge_source:-@bash-c:$0}" "$__forge_row" "$__forge_command" "$__forge_sha" "$BASH_VERSION" >>"${FORGERULES_COVERAGE_EVENTS}/${BASHPID}.events"' DEBUG
+printf "%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0" "${__forge_source:-@bash-c:$0}" "$__forge_row" "$__forge_command" "$__forge_sha" "$BASH_VERSION" "$__forge_fn" "$__forge_definition_id" >>"${FORGERULES_COVERAGE_EVENTS}/${BASHPID}.events"' DEBUG
 ''')
     started = time.time_ns()
     environment = os.environ.copy()
@@ -328,7 +398,7 @@ printf "%s\\0%s\\0%s\\0%s\\0%s\\0" "${__forge_source:-@bash-c:$0}" "$__forge_row
     events = finalize_events(root, directory, sources)
     record = {"sources": sources, "base": base,
               "head": checked(["git", "rev-parse", "HEAD"], cwd=root).decode().strip(),
-              "parser": parser_version, "bash": bash_version, "trace_format": 2,
+              "parser": parser_version, "bash": bash_version, "trace_format": 3,
               "command": command, "exit": result.returncode, "started_ns": started,
               "finished_ns": time.time_ns(), "events_sha256": digest(events), "helper_sha256": digest(helper),
               "hash_backend": checked(["/usr/bin/openssl", "version"]).decode().strip()}
@@ -353,9 +423,10 @@ def main(argv=None):
             collect(root, args.directories[0].resolve(), args.entry, args.base)
             return 0
         head = checked(["git", "rev-parse", "HEAD"], cwd=root).decode().strip()
-        sources, hits, records = load_evidence(root, args.directories, args.base, head)
-        result = summarize(root, sources, hits, changed_rows(root, args.base))
-        result.update({"base": args.base, "head": head, "sources": sources, "runs": records})
+        base = resolve_commit(root, args.base)
+        sources, hits, records = load_evidence(root, args.directories, base, head)
+        result = summarize(root, sources, hits, changed_rows(root, base))
+        result.update({"base": base, "head": head, "sources": sources, "runs": records})
         print(json.dumps(result, indent=2))
         return 0 if result["production"]["passed"] and result["changed_production"]["passed"] else 1
     except (CoverageError, OSError, ValueError, KeyError, TypeError) as error:

@@ -127,7 +127,7 @@ fi
             self.assertEqual(results[0], {"sourced": "sourced", "child": "child", "direct": "direct", "cleanup": "cleaned"})
             self.assertEqual(results[0], results[1])
             head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-            sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], "HEAD", head)
+            sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
             report = self.collector.summarize(root, sources, hits, {})
             files = {f["path"]: f for f in report["files"]}
             self.assertEqual(files["Scripts/lib.sh"]["uncovered"], [])
@@ -186,6 +186,13 @@ fi
         with self.assertRaisesRegex(self.collector.CoverageError, "unsupported ANSI"):
             self.collector.syntax_fingerprint(b"x=$'\\e'")
 
+    def test_default_stdout_descriptor_is_semantically_equivalent(self):
+        for source in ("echo failure >&2", "echo failure 1>&2"):
+            result = subprocess.run(["bash", "-c", source], capture_output=True, text=True, shell=False)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", "failure\n"))
+        self.assertEqual(self.collector.syntax_fingerprint(b"echo failure >&2"),
+                         self.collector.syntax_fingerprint(b"echo failure 1>&2"))
+
     def test_compound_headers_arrays_and_redirections_have_explicit_ownership(self):
         sites = self.collector.command_sites(b'''declare -a data=(
  "one"
@@ -221,7 +228,7 @@ cat <(printf process) >out
 +++ b/Scripts/other.sh
 @@ -0,0 +1 @@
 '''
-        with mock.patch.object(self.collector, "checked", return_value=diff):
+        with mock.patch.object(self.collector, "resolve_commit", return_value="base"), mock.patch.object(self.collector, "checked", return_value=diff):
             self.assertEqual(self.collector.changed_rows(ROOT, "base"), {
                 "Scripts/a.sh": {1, 2, 3}, "Scripts/other.sh": {1}})
 
@@ -238,11 +245,11 @@ cat <(printf process) >out
         directory = root / "evidence"
         directory.mkdir()
         fingerprint = self.collector.syntax_fingerprint(b"printf covered")
-        (directory / "events.json").write_text(json.dumps({"events": [["Scripts/probe.sh", 1, fingerprint, self.collector.digest(root / "Scripts/probe.sh"), "5.3.15(1)"]]}))
+        (directory / "events.json").write_text(json.dumps({"events": [["Scripts/probe.sh", 1, fingerprint, self.collector.digest(root / "Scripts/probe.sh"), "5.3.15(1)", "", ""]]}))
         (directory / "trace-environment.sh").write_text(":\n")
         record = {"sources": self.collector.snapshot(root), "base": "base", "head": "head", "exit": 0,
                   "started_ns": 1, "finished_ns": 2, "parser": "v3.12.0",
-                  "bash": "GNU bash, version 5.3.15(1)", "trace_format": 2,
+                  "bash": "GNU bash, version 5.3.15(1)", "trace_format": 3,
                   "events_sha256": self.collector.digest(directory / "events.json"),
                   "helper_sha256": self.collector.digest(directory / "trace-environment.sh")}
         (directory / "evidence.json").write_text(json.dumps(record))
@@ -251,7 +258,7 @@ cat <(printf process) >out
     def test_trace_provenance_negative_cases(self):
         for change in [{"base": "other"}, {"head": "other"}, {"sources": {}}, {"exit": 1},
                        {"finished_ns": 0}, {"parser": "future"}, {"bash": "old"},
-                       {"trace_format": 1}, {"trace_format": True}, {"bash": "GNU bash, version 5.3.150(1)"},
+                       {"trace_format": 2}, {"trace_format": True}, {"bash": "GNU bash, version 5.3.150(1)"},
                        {"events_sha256": "stale"}, {"helper_sha256": "stale"}]:
             with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -269,7 +276,7 @@ cat <(printf process) >out
             with self.subTest(event=event), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 directory, record = self.evidence_fixture(root)
-                (directory / "events.json").write_text(json.dumps({"events": [event + [self.collector.digest(root / "Scripts/probe.sh"), "5.3.15(1)"]]}))
+                (directory / "events.json").write_text(json.dumps({"events": [event + [self.collector.digest(root / "Scripts/probe.sh"), "5.3.15(1)", "", ""]]}))
                 record["events_sha256"] = self.collector.digest(directory / "events.json")
                 (directory / "evidence.json").write_text(json.dumps(record))
                 with self.assertRaisesRegex(self.collector.CoverageError, "malformed|stale"):
@@ -290,7 +297,7 @@ cat <(printf process) >out
                     name = "/removed/synthetic/clone"
                     sha = self.collector.digest(source) if mode == "clone" else "unmatched"
                 data = b"\0".join([name.encode(), b"-1" if mode == "negative" else b"1",
-                                     b"printf covered", sha.encode(), b"5.3.15(1)"]) + b"\0"
+                                     b"printf covered", sha.encode(), b"5.3.15(1)", b"", b""]) + b"\0"
                 if mode == "truncated": data = data[:-1]
                 if mode == "empty": data = b""
                 (directory / "temporary-events/1.events").write_bytes(data)
@@ -312,12 +319,14 @@ cat <(printf process) >out
             original_checked = self.collector.checked
             def checked(command, **kwargs):
                 return b"head\n" if command[:3] == ["git", "rev-parse", "HEAD"] else original_checked(command, **kwargs)
-            with mock.patch.object(self.collector, "checked", side_effect=checked), \
+            with mock.patch.object(self.collector, "resolve_commit", return_value="base"), \
+                    mock.patch.object(self.collector, "checked", side_effect=checked), \
                     mock.patch.object(self.collector, "changed_rows", return_value={"Scripts/probe.sh": {1}}), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(self.collector.main(arguments), 0)
                 self.assertEqual(json.loads(output.getvalue())["production"]["covered"], 1)
-            with mock.patch.object(self.collector, "checked", side_effect=checked), \
+            with mock.patch.object(self.collector, "resolve_commit", return_value="base"), \
+                    mock.patch.object(self.collector, "checked", side_effect=checked), \
                     mock.patch.object(self.collector, "changed_rows", return_value={}), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(self.collector.main(arguments), 1)
@@ -337,7 +346,7 @@ cat <(printf process) >out
                 original_checked = self.collector.checked
                 def checked(command, **kwargs):
                     return b"head\n" if command[:3] == ["git", "rev-parse", "HEAD"] else original_checked(command, **kwargs)
-                with mock.patch.object(self.collector, "checked", side_effect=checked):
+                with mock.patch.object(self.collector, "resolve_commit", return_value="base"), mock.patch.object(self.collector, "checked", side_effect=checked):
                     with self.assertRaisesRegex(self.collector.CoverageError, "trace command failed|source changed"):
                         self.collector.collect(root, root / "evidence", "Scripts/probe.sh", "base")
 
@@ -360,7 +369,7 @@ cat <(printf process) >out
             with mock.patch.dict(os.environ, {"FIXTURE_EXTERNAL": str(external)}):
                 self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
             head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-            sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], "HEAD", head)
+            sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
             result = self.collector.summarize(root, sources, hits, {})
             self.assertIn(2, result["files"][0]["uncovered"])
             events = json.loads((root / "evidence/events.json").read_text())
@@ -399,6 +408,49 @@ mv saved Scripts/lib.sh
             report = self.collector.summarize(root, self.collector.snapshot(root), {"Scripts/probe.sh": {event}}, {})
             self.assertEqual(report["production"]["total"], 2)
             self.assertEqual(report["files"][0]["uncovered"], [2])
+
+    def test_cached_function_from_mutated_source_is_rejected_after_restore(self):
+        for replacement in ('f() {\n if true; then\n  printf wrongly_credited\n fi\n}\n',
+                            'f() {\n :\n  printf wrongly_credited\n}\n'):
+            with self.subTest(replacement=replacement), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                main = 'cp Scripts/lib.sh saved\nprintf %s "$REPLACEMENT" > Scripts/lib.sh\nsource Scripts/lib.sh\nmv saved Scripts/lib.sh\nf\n'
+                self.review_fixture(root, {"Scripts/main.sh": main,
+                                          "Scripts/lib.sh": 'f() {\n if false; then\n  printf wrongly_credited\n fi\n}\n'})
+                with mock.patch.dict(os.environ, {"REPLACEMENT": replacement}):
+                    with self.assertRaisesRegex(self.collector.CoverageError, "function.*definition|source"):
+                        self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+
+    def test_invalid_base_is_rejected_before_artifact_creation(self):
+        for base in ("--output=forged-diff", "not-a-commit"):
+            with self.subTest(base=base), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                self.review_fixture(root, {"Scripts/main.sh": "printf safe\n"})
+                with contextlib.redirect_stderr(io.StringIO()):
+                    code = self.collector.main(["collect", str(root / "evidence"), "--root", str(root),
+                                                "--entry", "Scripts/main.sh", "--base=" + base])
+                self.assertEqual(code, 2)
+                self.assertFalse((root / "evidence").exists())
+                self.assertFalse((root / "forged-diff").exists())
+
+    def test_specific_enclosing_function_resolves_shared_runtime_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Scripts").mkdir()
+            body = b'x="$(\n foo(){\n  printf same\n }\n bar(){\n  printf same\n }\n foo\n)"\n'
+            (root / "Scripts/probe.sh").write_bytes(body)
+            definitions = self.collector.function_definitions(body)
+            event = (9, self.collector.syntax_fingerprint(b"printf same"), "foo", definitions["foo"][0])
+            result = self.collector.summarize(root, self.collector.snapshot(root), {"Scripts/probe.sh": {event}}, {})
+            self.assertIn(3, result["files"][0]["covered_rows"])
+            self.assertIn(6, result["files"][0]["uncovered"])
+
+    def test_ambiguous_same_name_function_definitions_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self.review_fixture(root, {"Scripts/main.sh": 'f(){ printf first; }\nf(){ printf second; }\nf\n'})
+            with self.assertRaisesRegex(self.collector.CoverageError, "ambiguous runtime function"):
+                self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
 
 
 def executable_lines(path):
