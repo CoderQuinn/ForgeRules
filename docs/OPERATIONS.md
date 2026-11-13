@@ -14,7 +14,34 @@ receipt, and rollback.
   mutable `latest` release is for discovery only and is never an activation or
   rollback identifier.
 - A dated release tag is write-once. Release workflows fail if that tag already
-  exists; they never replace its assets.
+  exists; they never replace its assets. Once publicly published, its exact ref
+  remains reserved to that commit even if the failed release is withdrawn.
+- The workflow creates each dated release with a fresh REST `201` response; it
+  never discovers or updates a draft by tag. It records that exact release ID,
+  verifies the commit-bound draft and every remotely uploaded byte, and only
+  then publishes it. After publication it requires the tag, release ID, and
+  peeled commit to agree.
+- `latest` is a separate fresh release, not a retagged dated release. The
+  workflow creates a unique `latest-staging-RUN_ID-RUN_ATTEMPT` draft, uploads
+  and byte-verifies all of its assets while the old `latest` remains available,
+  and records its exact ID. Only then may it snapshot and recheck the old
+  published `latest` release plus raw tag-ref object, delete that pair, retag
+  the same verified staging ID to `latest` while it is still a draft, publish
+  it with `make_latest=true`, and verify exact ID, latest pointer, exact tag
+  ref, peeled commit, checksums, and remote bytes. A failure never exposes an
+  unverified or partial `latest`, although `latest` can be temporarily absent
+  after the old verified pair has been removed.
+- Failure cleanup owns only the fresh REST response ID. A draft cleanup deletes
+  that exact ID and never guesses ownership of a tag from a matching commit.
+  Cleanup of an ambiguously published fresh release checks its exact release
+  and raw ref fingerprints before withdrawing the exact release ID. A published
+  `rules-YYYYMMDD` ref is then rechecked and retained permanently as the name's
+  reservation. Only mutable `latest` or staging refs may be deleted, and only
+  when the pre-delete release-by-tag ID and raw ref fingerprint still identify
+  that publication and the ref still peels to the expected commit. Mismatched
+  or replaced refs are preserved for manual inspection. An unsupported,
+  malformed, or failed fingerprint stops further mutations immediately; a
+  failure before withdrawal leaves both objects intact.
 - Every downloaded file is verified against `SHA256SUMS`. The manifest's
   converter revision, source-lock digest, selected bundle, sizes, and digests
   must agree with the downloaded files before runtime validation begins.
@@ -26,6 +53,61 @@ receipt, and rollback.
   been accepted and the previous bundle is still intact.
 - Update failure is observable and must not silently select Direct routing.
 
+## Repairing only the mutable latest alias
+
+If a full run published and verified today's immutable dated release but failed
+while replacing `latest`, do not rerun the full path: its write-once
+`rules-YYYYMMDD` check must fail on the already-published tag. Instead, dispatch
+**Build Rules** from a branch or tag that resolves to the intended commit and
+select `release_scope` = `latest-only`:
+
+```bash
+gh workflow run build-rules.yml \
+  --repo CoderQuinn/ForgeRules \
+  --ref <branch-or-tag-at-intended-commit> \
+  -f release_scope=latest-only
+```
+
+The recovery run still checks out that ref, builds, tests, converts, creates a
+new unique staging draft, and verifies its remote bytes. It skips every dated
+tag/create/publish/cleanup step and never reuses a failed staging draft by tag.
+Confirm the run's `GITHUB_SHA` is the intended converter revision before using
+the recovered alias.
+
+Old-`latest` deletion is deliberately fail closed. The script accepts only
+complete absence or one published, mutable release paired with an exact
+`refs/tags/latest`; release-only, ref-only, hidden draft, immutable, and changed
+identity states require manual repair. It snapshots and rechecks the release
+fingerprint and raw ref object before mutation. GitHub's REST API does not offer
+an atomic compare-and-delete for these objects, so an external writer can still
+race between the last recheck and DELETE. The shared workflow concurrency group
+serializes ForgeRules workflows, but operators should also restrict tag writes
+and avoid other automation that mutates `latest`. If repository immutable
+release policy prevents deleting and reusing `latest`, this mutable Release
+alias workflow is unsupported; retain dated releases and choose a different
+discovery mechanism rather than weakening the identity checks.
+
+## Withdrawing a failed dated publication
+
+Post-publication verification can fail after consumers have already observed
+the dated identity. Cleanup withdraws the owned release ID and preserves the
+unchanged `rules-YYYYMMDD` ref at its original commit, including the raw annotated
+tag object when applicable. The retained ref intentionally blocks both the tag
+guard and fresh draft creation, including attempts from a different commit.
+Use a new dated identity for a later build; do not delete or move the retained
+ref to reuse the name. A genuine unpublished draft with no associated public
+ref can still be removed without reserving its name.
+
+A missing dated reservation or changed/unknown association is a cleanup
+failure requiring manual inspection, never evidence that the name is free to
+reuse. Fingerprint failures stop immediately. Other association failures may
+withdraw the exact owned release while preserving surviving refs and returning
+failure. If the release has already been removed, rerunning cleanup reports
+the surviving reserved ref for manual review; it does not guess ownership or
+remove that ref. Restore a missing reservation only from independently verified
+original publication evidence, and retain the original commit and raw tag
+identity. This recovery does not recreate or validate withdrawn assets.
+
 ## Update procedure
 
 1. Update `rules.sources.lock.json` in a reviewed pull request. Record each
@@ -34,9 +116,10 @@ receipt, and rollback.
 2. Require the Go contract gate and pinned-source gate. The latter converts the
    complete locked inputs twice, validates both checksum files, and compares
    every output byte-for-byte.
-3. Merge the reviewed change. The release workflow creates a new immutable
-   `rules-YYYYMMDD` release containing the four rule assets, the published
-   source lock, `rules-manifest.json`, and `SHA256SUMS`.
+3. Merge the reviewed change. The release workflow stages a new immutable
+   `rules-YYYYMMDD` draft containing the four rule assets, the published source
+   lock, `rules-manifest.json`, and `SHA256SUMS`; it publishes only after remote
+   verification by release ID succeeds.
 4. Download the dated release to a new staging directory and verify it before
    selecting a bundle:
 

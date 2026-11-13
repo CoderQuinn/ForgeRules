@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/CoderQuinn/ForgeRules/internal/boundedinput"
 )
 
 const downloadTimeout = 2 * time.Minute
@@ -31,6 +33,9 @@ func downloadVerifiedFileWithClient(
 	url, path, expectedSHA256 string,
 	expectedSize int64,
 ) error {
+	if expectedSize > boundedinput.GeoIPBytes {
+		return fmt.Errorf("expected download size exceeds byte limit of %d bytes", boundedinput.GeoIPBytes)
+	}
 	if expectedSize <= 0 {
 		return fmt.Errorf("expected download size must be positive")
 	}

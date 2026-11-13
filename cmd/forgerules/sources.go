@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/CoderQuinn/ForgeRules/internal/boundedinput"
 )
 
 const sourceLockSchemaVersion = 1
@@ -72,7 +75,11 @@ func loadSourceLock(filePath string) (sourceLock, error) {
 }
 
 func decodeSourceLock(reader io.Reader) (sourceLock, error) {
-	decoder := json.NewDecoder(reader)
+	contents, err := boundedinput.ReadAll(reader, boundedinput.SourceLockBytes)
+	if err != nil {
+		return sourceLock{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 
 	var lock sourceLock
@@ -152,6 +159,13 @@ func (asset lockedAsset) validate(kind, sourceName string, allowedNames ...strin
 	}
 	if _, err := time.Parse(time.RFC3339, asset.PublishedAt); err != nil {
 		return fmt.Errorf("%s publishedAt: %w", label, err)
+	}
+	limit := boundedinput.GeoSiteBytes
+	if kind == "geoip" {
+		limit = boundedinput.GeoIPBytes
+	}
+	if asset.Size > limit {
+		return fmt.Errorf("%s size exceeds byte limit of %d bytes", label, limit)
 	}
 	if asset.Size <= 0 {
 		return fmt.Errorf("%s size must be positive", label)

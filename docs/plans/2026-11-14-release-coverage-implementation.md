@@ -1,0 +1,37 @@
+# Release-script coverage implementation plan
+
+Use subagent-driven development with GPT-6.1 SOL xhigh implementation and independent Astra high review. This continues the already authorized foundation scope.
+
+Spec: [Release coverage](../specs/2026-11-14-release-coverage-design.md).
+
+### Task 1: Reproducible release coverage and failure scenarios
+
+Ownership: release test scripts/fixtures, new narrowly scoped coverage collector/fixtures, coverage documentation and this plan/spec. Read the concurrently completed bounded-input work, but do not edit its Go files or coverage-launcher package enumeration. Coordinate any shared launcher change first.
+
+- [ ] Freeze executable-location and trace mapping with representative Bash syntax fixtures; retain measurement RED for missing/unexecuted code and misleading quote-only lines.
+- [ ] Collect existing local release tests and report the initial uncovered locations. Do not treat kcov's naive multiline-string denominator as precise Bash coverage.
+- [ ] Add table-driven failure scenarios checking mutation traces and final identities until production and changed executable gates pass. Keep test-support accounting explicit.
+- [ ] Verify parser/collector negative cases, whole and changed coverage, existing release/workflow harnesses and committed-range whitespace/syntax checks. No live release calls.
+- [ ] Commit owned files and report exact base/head, commands, raw evidence, coverage scopes and remaining limitations for independent Astra review.
+
+## Scope ruling
+
+Gate whole operational production Bash, added production rows since PR17, and new collector executable code at 95%. Report changed test/fixture scope separately with uncovered locations; intentional assertion-failure arms do not have a 95% requirement. No production file is excluded. Preserve negative collector and release mutation/identity checks rather than adding assertion-arm padding.
+
+## Collector checkpoint
+
+The collector and its negative/parity fixtures are reviewed separately before final fault-suite integration. Production and added-production Bash gates remain open until all suites are frozen and recollected against the exact final commit. See the design for ownership, native syntax hashes, conservative ambiguity/EXIT behavior, provenance binding and separate Python tooling gate.
+
+Independent collector review requested corrections for actual sourced-file identity, transient source changes, per-child Bash pinning and redirect-only ownership. The fix slice retains RED evidence and separate re-review before final collection. All earlier numeric release reports are diagnostic, not qualification.
+
+The next correction binds runtime loaded definitions to the exact enclosing source function, rejects ambiguous same-name declarations and canonicalizes the base commit before evidence creation. Cached-function/removed-guard and invalid-base RED cases precede this implementation. Extracted-hook measurement and whole-production gates remain open.
+
+Combined checkpoint integrates the independently reviewed block/while redirect patch with first-class hook meta-evidence and failure-neutral logging. All source scopes remain separate; whole-release numeric qualification still requires fresh committed-source collection after all test/support files are frozen.
+
+The simultaneous event/marker append-failure review finding is reproduced with actual processes and prior valid events. The bounded success-latch correction preserves target `beforeafter` output and exit zero while rejecting event-only, dual-file and restored-permission cases before finalization. Its narrow re-review precedes expensive final release collection.
+
+The frozen03f local run passed the three release harnesses and170 fault cases, then rejected unchanged `classify_exact_release` definitions because Bash deparses `elif` as nested `else; if`. Preserve that rejection, all raw text and definition payloads, original control identities and exact source archive. A separate strict-normalizer correction requires RED fingerprints, three-way actual Bash status/output parity and semantic-negative fixtures before review. Re-finalization of retained text is a separately identified derivation, never relabeled as an originally successful collection. The actual Go launcher was captured separately at the same03f revision.
+
+Reviewed guarded START-row substitution aliases may be integrated independently; canonicalization, hook and protocol compatibility must be recorded separately. Before any final reuse, validate original artifact hashes/control state and demonstrate unchanged operational files plus all capture-used fixture/harness/input dependencies, then recompute whole/changed denominators for the candidate. Fresh collector/hook tests and final-source static scans remain required.
+
+The retained03f diagnostic also exposed the production create script's redirected subshell. Add actual executed/skipped/failed-target and direct target-substitution RED fixtures, then narrowly extend the already reviewed descendant-entry rule to `Subshell`; do not omit the redirect rows or change the script. Independent review requires a fresh final capture because the original rejected collection never persisted its child exit code. Keep that diagnostic and the separately valid03f Go capture as historical evidence.
