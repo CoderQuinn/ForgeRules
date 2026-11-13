@@ -203,6 +203,68 @@ fi
         self.assertEqual(self.collector.syntax_fingerprint(b"echo failure >&2"),
                          self.collector.syntax_fingerprint(b"echo failure 1>&2"))
 
+    def test_elif_deparse_preserves_behavior_and_native_function_binding(self):
+        source = b'''classify(){
+ if [[ "$1" == published ]]; then
+  printf published; return 7
+ elif [[ "$1" == draft ]]; then
+  printf draft; return 8
+ else
+  printf other; return 9
+ fi
+}
+'''
+        bash, _ = self.collector.tool("bash", "5.3.15")
+        environment = os.environ | {"BASH_ENV": "/dev/null"}
+        declared = self.collector.checked([bash, "--noprofile", "--norc"],
+                                           input=source + b"declare -f classify\n", env=environment)
+        self.assertNotIn(b"elif", declared)
+        self.assertEqual(self.collector.syntax_fingerprint(source), self.collector.syntax_fingerprint(declared))
+        for argument, expected in (("published", 7), ("draft", 8), ("other", 9)):
+            results = []
+            for program in (source, declared):
+                # Pinned Bash receives only this authored synthetic program on stdin and a separate literal argument.
+                result = subprocess.run([bash, "--noprofile", "--norc", "-s", "--", argument],
+                                        input=program + b'\nclassify "$1"\n', capture_output=True,
+                                        env=environment, shell=False)
+                results.append((result.returncode, result.stdout, result.stderr))
+            self.assertEqual(results, [(expected, argument.encode(), b"")] * 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            script = source.decode() + '''classify published || [[ "$?" == 7 ]]
+classify draft || [[ "$?" == 8 ]]
+classify other || [[ "$?" == 9 ]]
+'''
+            report = self.native_fixture_report(root, {"Scripts/main.sh": script})
+            self.assertEqual((root / "evidence/run.log").read_text(), "publisheddraftother")
+            self.assertEqual(report["files"][0]["uncovered"], [])
+
+    def test_elif_normalization_preserves_guard_order_and_else_statement_semantics(self):
+        source = b'f(){ if first; then one; elif second; then two; else three; fi; }'
+        equivalent = b'f(){ if first; then one; else if second; then two; else three; fi; fi; }'
+        fingerprint = self.collector.syntax_fingerprint(source)
+        self.assertEqual(fingerprint, self.collector.syntax_fingerprint(equivalent))
+        changed = [
+            b'f(){ if first; then one; elif true; then two; else three; fi; }',
+            b'f(){ if second; then two; elif first; then one; else three; fi; }',
+            b'f(){ if first; then one; else if second; then two; else three; fi; extra; fi; }',
+            b'f(){ if first; then one; else extra; if second; then two; else three; fi; fi; }',
+            b'f(){ if first; then one; else if second; then two; else three; fi >out; fi; }',
+            b'f(){ if first; then one; else ! if second; then two; else three; fi; fi; }',
+            b'f(){ if first; then one; else if second; then two; else three; fi | cat; fi; }',
+            b'f(){ if first; then one; else if second; then two; else three; fi &>out; fi; }',
+        ]
+        for altered in changed:
+            with self.subTest(altered=altered):
+                self.assertNotEqual(fingerprint, self.collector.syntax_fingerprint(altered))
+        # The pinned minifier produces unparsable output for this valid Bash
+        # background form. It must remain rejected, never normalized/credited.
+        with self.assertRaises(self.collector.CoverageError):
+            self.collector.syntax_fingerprint(b'f(){ if first; then one; else if second; then two; else three; fi & fi; }')
+        chain = b'f(){ if first; then one; elif second; then two; elif third; then three; else four; fi; }'
+        nested = b'f(){ if first; then one; else if second; then two; else if third; then three; else four; fi; fi; fi; }'
+        self.assertEqual(self.collector.syntax_fingerprint(chain), self.collector.syntax_fingerprint(nested))
+
     def test_compound_headers_arrays_and_redirections_have_explicit_ownership(self):
         sites = self.collector.command_sites(b'''declare -a data=(
  "one"

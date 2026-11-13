@@ -57,7 +57,13 @@ Current disk bytes alone do not identify a previously loaded function. Every kno
 
 Trace format 3 requires this function context in addition to source SHA and actual Bash version. Bases are resolved option-safely to one canonical commit OID before collection or diff calculation. Flags and noncommits fail before an evidence directory is created. Bash's equivalent default `>&2` and explicit `1>&2` spelling is normalized only after a fixture proves identical process output and exit behavior; no release condition or identity check changes.
 
-The generated hook remains a separate authored-Bash collector scope whose own coverage is still open at this checkpoint; a passing Python collector percentage does not close it.
+The authored hook remains a separate Bash collector scope; a passing Python collector percentage does not close its independent gate.
+
+### Bash function deparsing and guarded START aliases
+
+Bash `declare -f` expands an authored `elif` into `else` containing a nested `if`. Canonicalization treats these spellings equally only when the else wrapper has no condition and exactly one foreground, unnegated, unredirected `IfClause` statement. Conditions, body order, additional statements, redirects and pipeline structure remain in the fingerprint. Actual Bash fixtures compare all three outputs and nonzero statuses, validate the resulting runtime function binding, and reject altered guards and statement forms. A pinned-minifier background form that cannot be parsed remains unsupported rather than earning credit.
+
+Pinned Bash can report a simple substitution producer at its owning statement's starting row. That alias is eligible only for a single direct call/declaration body in the same approved function, with independent direct evidence of the owner and globally unambiguous syntax within that source/function. Skipped or failed substitutions, deferred functions and stale EXIT syntax cannot borrow it. Complex enclosing-container END aliases remain unsupported and their owned rows remain uncovered. These analyzer rules change no hook bytes, event format or release behavior.
 
 ## First-class Bash hook checkpoint
 

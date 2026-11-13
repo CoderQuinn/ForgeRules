@@ -71,8 +71,16 @@ def syntax_fingerprint(source):
                     return escapes[match[0]]
                 node = {key: value for key, value in node.items() if key != "Dollar"}
                 node["Value"] = re.sub(r"\\.", decode, value)
-            return {key: structural(value) for key, value in node.items()
-                    if key != "Comments" and not (isinstance(value, dict) and "Offset" in value)}
+            result = {key: structural(value) for key, value in node.items()
+                      if key != "Comments" and not (isinstance(value, dict) and "Offset" in value)}
+            # declare -f spells elif as else containing one plain nested if.
+            # Keep redirects, negation, backgrounding and any extra statement.
+            branch = result.get("Else", {})
+            statements = branch.get("Then", [])
+            if (set(branch) == {"Then"} and len(statements) == 1 and set(statements[0]) == {"Cmd"}
+                    and statements[0]["Cmd"].get("Type") == "IfClause"):
+                result["Else"] = {key: value for key, value in statements[0]["Cmd"].items() if key != "Type"}
+            return result
         return node
     canonical = json.dumps(structural(tree), sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
