@@ -2,8 +2,15 @@
 
 # This file is copied byte-for-byte to BASH_ENV. Its own coverage uses xtrace,
 # independently of the DEBUG events it emits for the program under test.
+_forgerules_mark_failure() {
+    if [[ -n "${FORGERULES_COVERAGE_FAILURE:-}" ]]; then
+        printf '%s\n' "${BASHPID:-$$}" 2>/dev/null >>"${FORGERULES_COVERAGE_FAILURE}" || :
+    fi
+    return 0
+}
+
 if [[ "$BASH_VERSION" != 5.3.15\(* ]]; then
-    printf '%s\n' "$BASH_VERSION" >"${FORGERULES_COVERAGE_EVENTS}/${BASHPID:-$$}.unsupported"
+    printf '%s\n' "$BASH_VERSION" 2>/dev/null >"${FORGERULES_COVERAGE_EVENTS}/${BASHPID:-$$}.unsupported" || _forgerules_mark_failure
     return 0
 fi
 
@@ -27,7 +34,7 @@ _forgerules_emit_debug() {
             if __forge_definition_id="$(printf '%s' "$__forge_definition" | "${__forgerules_hasher}" dgst -sha256 -r)"; then
                 __forge_definition_id="${__forge_definition_id%% *}"
                 if [[ ! -f "${FORGERULES_COVERAGE_EVENTS}/${__forge_definition_id}.definition" ]]; then
-                    printf '%s' "$__forge_definition" >"${FORGERULES_COVERAGE_EVENTS}/${__forge_definition_id}.definition"
+                    printf '%s' "$__forge_definition" 2>/dev/null >"${FORGERULES_COVERAGE_EVENTS}/${__forge_definition_id}.definition" || _forgerules_mark_failure
                 fi
             fi
         elif [[ "$__forge_fn" == source || "$__forge_fn" == main ]]; then
@@ -35,7 +42,8 @@ _forgerules_emit_debug() {
         fi
     fi
     set -T
-    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "${__forge_source:-@bash-c:$0}" "$__forge_row" "$__forge_command" "$__forge_sha" "$BASH_VERSION" "$__forge_fn" "$__forge_definition_id" >>"${FORGERULES_COVERAGE_EVENTS}/${BASHPID}.events"
+    printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "${__forge_source:-@bash-c:$0}" "$__forge_row" "$__forge_command" "$__forge_sha" "$BASH_VERSION" "$__forge_fn" "$__forge_definition_id" 2>/dev/null >>"${FORGERULES_COVERAGE_EVENTS}/${BASHPID}.events" || _forgerules_mark_failure
+    return 0
 }
 
 set -T

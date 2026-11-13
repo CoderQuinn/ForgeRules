@@ -59,3 +59,11 @@ The generated hook remains a separate authored-Bash collector scope whose own co
 ## First-class Bash hook checkpoint
 
 The executable hook is authored in `Scripts/coverage/release-trace-hook.sh`; the collector copies its exact bytes to the evidence helper. It uses a named Bash callback so its body is visible to the syntax parser. It is collector tooling, separately inventoried with a mandatory Bash coverage gate; it is never mixed into release-operational production or test-support totals. All provenance and status-parity tests remain required. Independent hook xtrace measurement remains open until its dedicated fixture/evidence implementation is complete.
+
+## Independent hook evidence and redirected containers
+
+Hook execution is now measured independently through Bash xtrace on a dedicated `BASH_XTRACEFD`, never from its own DEBUG events. The synthetic profiles compare plain/traced exit status, stdout, stderr and side effects for status/errexit/EXIT, missing or virtual source, failed hash dependency, removed function definition and event-log failure. A separately labeled real Bash 3.2 negative fixture measures the unsupported-interpreter guard; it is not relabeled as Bash 5 production evidence. Short relative source framing avoids Bash 3's long-PS4 truncation. Raw trace hashes, exact source bytes/identity, versions, process/source/row framing and completion markers bind the measurements. Missing, stale, unexecuted and truncated trace probes fail the gate.
+
+Instrumentation write failures preserve the program's effects but record a separate failure flag, which rejects even otherwise complete prior DEBUG events. The report requires independent hook evidence via `--hook-evidence`; the hook receives its own mandatory tooling numerator/denominator and never inflates release production.
+
+Reviewed block and while-container redirect support includes each executable redirect target in the denominator. Only an unambiguous executed descendant inside that container can establish redirect entry. Target substitutions cannot prove their own redirect succeeded, and later function execution cannot prove a declaration block was entered. Unsupported container types remain explicit errors. These checks are collector compatibility work and do not change any release or consumer script.

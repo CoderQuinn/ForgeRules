@@ -15,11 +15,13 @@ import tempfile
 import trace
 import types
 import unittest
+import uuid
 from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
 COLLECTOR = ROOT / "Scripts/release_coverage.py"
+HOOK_RUNS = []
 
 
 class CollectorTests(unittest.TestCase):
@@ -218,7 +220,130 @@ cat <(printf process) >out
             with self.assertRaisesRegex(self.collector.CoverageError, "unsupported Bash"):
                 self.collector.command_sites(b":")
         with self.assertRaisesRegex(self.collector.CoverageError, "compound command redirection"):
-            self.collector.command_sites(b"{\n :\n} > output\n")
+            self.collector.command_sites(b"if true; then\n :\nfi > output\n")
+
+    def test_entered_blocks_and_while_conditions_cover_only_owned_redirect_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self.review_fixture(root, {"Scripts/main.sh": r'''set -euo pipefail
+{
+ printf '%s\n' header
+ while IFS=$'\t' read -r name count; do
+  printf '%s:%s\n' "$name" "$count"
+ done < <(
+  printf 'one\t1\n'
+ )
+ while false; do
+  printf never
+ done < /dev/null
+} > \
+ summary
+printf after
+'''})
+            self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
+            report = self.collector.summarize(root, sources, hits, {})
+            self.assertEqual((root / "summary").read_text(), "header\none:1\n")
+            self.assertEqual((root / "evidence/run.log").read_text(), "after")
+            self.assertEqual(report["files"][0]["owned"], [1, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14])
+            # Bash reports the producer at the outer statement's final row 13;
+            # it has no approved alias there and remains conservatively uncovered.
+            self.assertEqual(report["files"][0]["uncovered"], [7, 10])
+
+    def test_skipped_and_failed_redirects_cannot_borrow_target_substitution_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self.review_fixture(root, {"Scripts/main.sh": '''if false; then
+ {
+  printf skipped
+ } > skipped
+ while false; do
+  printf skipped_loop
+ done < skipped_input
+fi
+{
+ printf forbidden_block
+} > "$(
+ printf absent
+)/out" ||
+ :
+while printf forbidden_condition; do
+ printf forbidden_body
+done < "$(
+ printf absent
+)/input" ||
+ :
+printf survived
+'''})
+            self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
+            report = self.collector.summarize(root, sources, hits, {})
+            self.assertEqual(report["files"][0]["covered_rows"], [1, 14, 20, 21])
+            self.assertEqual(report["files"][0]["uncovered"], [3, 4, 5, 6, 7, 10, 11, 12, 15, 16, 17, 18])
+            self.assertFalse((root / "skipped").exists())
+            self.assertNotIn("forbidden", (root / "evidence/run.log").read_text())
+
+    def test_matched_target_substitution_cannot_prove_its_own_container_redirect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Scripts").mkdir()
+            (root / "Scripts/probe.sh").write_text('''{
+ printf forbidden
+} > "$(
+ printf absent
+)/out"
+''')
+            event = (4, self.collector.syntax_fingerprint(b"printf absent"))
+            report = self.collector.summarize(root, self.collector.snapshot(root),
+                                              {"Scripts/probe.sh": {event}}, {})
+            self.assertEqual(report["files"][0]["covered_rows"], [4])
+            self.assertEqual(report["files"][0]["uncovered"], [2, 3])
+
+    def test_deferred_function_body_does_not_prove_its_declaration_block_redirect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self.review_fixture(root, {"Scripts/main.sh": '''{
+ later() {
+  {
+   printf called
+  } > called
+ }
+} > declaration
+later
+'''})
+            self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
+            report = self.collector.summarize(root, sources, hits, {})
+            self.assertEqual((root / "called").read_text(), "called")
+            self.assertEqual((root / "declaration").read_text(), "")
+            self.assertEqual(report["files"][0]["covered_rows"], [4, 5, 8])
+            self.assertEqual(report["files"][0]["uncovered"], [7])
+
+    def test_ambiguous_descendants_do_not_credit_enclosing_redirects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Scripts").mkdir()
+            (root / "Scripts/probe.sh").write_text('''v="$(
+ if true; then
+  {
+   printf same
+  } > first
+ else
+  {
+   printf same
+  } > second
+ fi
+)"
+''')
+            event = (11, self.collector.syntax_fingerprint(b"printf same"))
+            report = self.collector.summarize(root, self.collector.snapshot(root),
+                                              {"Scripts/probe.sh": {event}}, {})
+            self.assertEqual(report["files"][0]["covered_rows"], [])
+            self.assertEqual(report["files"][0]["uncovered"], [1, 2, 4, 5, 8, 9])
+            self.assertEqual(report["files"][0]["ambiguous_events"][0]["candidate_anchors"], [4, 8])
 
     def test_changed_row_parser_includes_continuations_and_zero_count_hunks(self):
         diff = b'''diff --git a/Scripts/a.sh b/Scripts/a.sh
@@ -316,17 +441,22 @@ cat <(printf process) >out
             root = Path(tmp)
             directory, _ = self.evidence_fixture(root)
             arguments = ["report", str(directory), "--root", str(root), "--base", "base"]
+            hook_evidence = root / "hook.json"
+            hook_evidence.write_text("{}")
+            arguments += ["--hook-evidence", str(hook_evidence)]
             original_checked = self.collector.checked
             def checked(command, **kwargs):
                 return b"head\n" if command[:3] == ["git", "rev-parse", "HEAD"] else original_checked(command, **kwargs)
             with mock.patch.object(self.collector, "resolve_commit", return_value="base"), \
                     mock.patch.object(self.collector, "checked", side_effect=checked), \
+                    mock.patch.object(self.collector, "hook_coverage", return_value={"passed": True}), \
                     mock.patch.object(self.collector, "changed_rows", return_value={"Scripts/probe.sh": {1}}), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(self.collector.main(arguments), 0)
                 self.assertEqual(json.loads(output.getvalue())["production"]["covered"], 1)
             with mock.patch.object(self.collector, "resolve_commit", return_value="base"), \
                     mock.patch.object(self.collector, "checked", side_effect=checked), \
+                    mock.patch.object(self.collector, "hook_coverage", return_value={"passed": True}), \
                     mock.patch.object(self.collector, "changed_rows", return_value={}), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(self.collector.main(arguments), 1)
@@ -459,6 +589,125 @@ mv saved Scripts/lib.sh
         owned = {row for site in self.collector.command_sites(source) for row in site["rows"]}
         self.assertGreater(len(owned), 20)
         self.assertIn(b"_forgerules_emit_debug", source)
+
+    def test_absent_independent_hook_trace_fails_closed(self):
+        self.assertTrue(hasattr(self.collector, "hook_coverage"), "independent Bash hook coverage is missing")
+        with self.assertRaisesRegex(self.collector.CoverageError, "missing"):
+            self.collector.hook_coverage({"runs": []})
+
+    def test_logged_hook_write_failure_rejects_prior_complete_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "Scripts").mkdir()
+            source = root / "Scripts/probe.sh"
+            source.write_text("printf covered\n")
+            evidence = root / "evidence"
+            (evidence / "temporary-events").mkdir(parents=True)
+            event = b"\0".join([str(source).encode(), b"1", b"printf covered", self.collector.digest(source).encode(),
+                                  b"5.3.15(1)", b"", b""]) + b"\0"
+            (evidence / "temporary-events/1.events").write_bytes(event)
+            (evidence / "write-failures").write_text("1\n")
+            with self.assertRaisesRegex(self.collector.CoverageError, "incomplete.*write"):
+                self.collector.finalize_events(root, evidence, self.collector.snapshot(root))
+            self.assertFalse((evidence / "events.json").exists())
+
+    def run_hook_meta(self, hook, program, label, bash="/opt/homebrew/bin/bash", hasher="/usr/bin/openssl", virtual=False):
+        artifact = Path(tempfile.mkdtemp(prefix="forgerules-hook-meta-"))
+        events = artifact / "events"
+        if label != "log-failure": events.mkdir()
+        nonce = uuid.uuid4().hex[:16]
+        driver = artifact / "driver.sh"
+        driver.write_text('PS4="$FORGE_META_PS4"\nsource "$FORGE_HOOK"\nset -euo pipefail\n' + program + "\n")
+        raw = artifact / "xtrace.log"
+        before = self.collector.file_identity(hook)
+        environment = os.environ.copy()
+        environment.pop("BASH_ENV", None)
+        environment.pop("BASH_XTRACEFD", None)
+        environment.update({"FORGERULES_COVERAGE_EVENTS": str(events), "FORGERULES_COVERAGE_HASHER": hasher,
+                            "FORGERULES_COVERAGE_FAILURE": str(artifact / "write-failures"),
+                            "FORGE_META_PS4": "+FORGE_META_" + nonce + "\t${BASH_VERSION}\t${BASHPID:-$$}\t${BASH_SOURCE[0]:-$0}\t${LINENO}\t"})
+        version = subprocess.check_output([bash, "-c", 'printf "%s" "$BASH_VERSION"'], env=environment, text=True)
+        results = []
+        for mode in ("plain", "traced"):
+            output = artifact / mode
+            output.mkdir()
+            hook_argument = "./" + hook.name if version.startswith("3.") else str(hook)
+            environment.update({"RESULT": str(output), "FORGE_HOOK": hook_argument if mode == "traced" else "/dev/null"})
+            argv = [bash]
+            if mode == "traced": argv.append("-x")
+            argv += ["-c", driver.read_text(), "virtual-hook-probe"] if virtual else [str(driver)]
+            with raw.open("wb" if mode == "traced" else "ab") as trace_file:
+                if mode == "traced" and version.startswith("5."):
+                    environment["BASH_XTRACEFD"] = str(trace_file.fileno())
+                else:
+                    environment.pop("BASH_XTRACEFD", None)
+                result = subprocess.run(argv, env=environment, cwd=hook.parent, shell=False, stdout=subprocess.PIPE,
+                                        stderr=trace_file if mode == "traced" and version.startswith("3.") else subprocess.PIPE,
+                                        pass_fds=(trace_file.fileno(),), timeout=30)
+            stderr = result.stderr
+            if stderr is None:
+                stderr = b"\n".join(line for line in raw.read_bytes().splitlines() if not line.startswith(b"+"))
+            results.append((result.returncode, result.stdout, stderr,
+                            {p.name: p.read_bytes() for p in output.iterdir()}))
+        self.assertEqual(results[0], results[1], label)
+        self.assertEqual(results[1][0], 0, label)
+        with raw.open("ab") as output:
+            output.write(("FORGE_META_COMPLETE_" + nonce + "\n").encode())
+        record = {"source_path": str(hook.resolve()), "source_sha256": self.collector.digest(hook),
+                  "before": before, "after": self.collector.file_identity(hook), "parser": "v3.12.0",
+                  "bash": version, "nonce": nonce, "trace_path": str(raw), "trace_sha256": self.collector.digest(raw),
+                  "exit": result.returncode, "parity": True, "profile": label, "hasher": hasher, "cwd": str(hook.parent),
+                  "xtrace_channel": "BASH_XTRACEFD" if version.startswith("5.") else "Bash3 stderr negative fixture"}
+        if label == "log-failure":
+            self.assertTrue((artifact / "write-failures").read_text().strip())
+        return record
+
+    def test_independent_hook_profiles_preserve_program_effects(self):
+        hook = self.collector.HOOK
+        normal = '''status=0
+false || status=$?
+[[ "$status" == 1 ]]
+f(){ false; printf survived; }
+for attempt in 1 2; do
+ if value="$(f)"; then [[ "$value" == survived ]]; else exit 9; fi
+done
+if value="$(exit 7)"; then exit 10; else [[ "$?" == 7 ]]; fi
+cleanup(){ printf closed >"$RESULT/cleanup"; }
+trap cleanup EXIT
+printf 'printf library >/dev/null\\n' >"$RESULT/library.sh"
+source "$RESULT/library.sh"
+printf product'''
+        cases = [("normal", normal, "/usr/bin/openssl", False),
+                 ("hash-failure", normal, "/usr/bin/false", False),
+                 ("virtual", "printf product", "/usr/bin/openssl", True),
+                 ("missing-function", "f(){ unset -f f; printf product; }; f", "/usr/bin/openssl", False),
+                 ("log-failure", "printf product", "/usr/bin/openssl", False)]
+        for label, program, hasher, virtual in cases:
+            with self.subTest(label=label):
+                record = self.run_hook_meta(hook, program, label, hasher=hasher, virtual=virtual)
+                HOOK_RUNS.append(record)
+        if "5.3.15(" not in subprocess.check_output(["/bin/bash", "--version"], text=True):
+            HOOK_RUNS.append(self.run_hook_meta(hook, "printf product", "unsupported-child", bash="/bin/bash"))
+        result = self.collector.hook_coverage({"runs": HOOK_RUNS, "tests_passed": True})
+        self.assertTrue(result["passed"], result["uncovered"])
+
+    def test_hook_metric_rejects_unexecuted_and_bad_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.sh"
+            probe.write_text('printf observed >/dev/null\nif false; then\n printf missing\nfi\n')
+            record = self.run_hook_meta(probe, "printf product", "unexecuted-probe")
+            result = self.collector.hook_coverage({"runs": [record], "tests_passed": True}, hook=probe)
+            self.assertEqual((result["covered"], result["total"], result["uncovered"]), (2, 3, [3]))
+            self.assertFalse(result["passed"])
+            for mutation in [{"source_sha256": "stale"}, {"before": {}}, {"parser": "future"},
+                             {"parity": False}, {"bash": "future"}, {"nonce": "invalid"}, {"trace_sha256": "stale"}]:
+                with self.subTest(mutation=mutation), self.assertRaises(self.collector.CoverageError):
+                    self.collector.hook_coverage({"runs": [record | mutation], "tests_passed": True}, hook=probe)
+            trace_file = Path(record["trace_path"])
+            trace_file.write_bytes(trace_file.read_bytes().split(b"FORGE_META_COMPLETE_")[0])
+            record["trace_sha256"] = self.collector.digest(trace_file)
+            with self.assertRaisesRegex(self.collector.CoverageError, "truncated"):
+                self.collector.hook_coverage({"runs": [record], "tests_passed": True}, hook=probe)
 
 
 def executable_lines(path):

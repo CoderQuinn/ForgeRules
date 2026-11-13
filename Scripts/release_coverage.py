@@ -123,14 +123,17 @@ def command_sites(source):
             rows.add(node["OpPos"]["Line"])
         return rows
 
-    def visit(node, substitutions=(), function=None):
+    def visit(node, substitutions=(), function=None, entered_redirect_rows=()):
         if isinstance(node, list):
             for child in node:
-                visit(child, substitutions, function)
+                visit(child, substitutions, function, entered_redirect_rows)
         elif isinstance(node, dict):
+            compound_redirect_rows = set()
             if node.get("Type") == "FuncDecl":
                 syntax = source[node["Pos"]["Offset"]:node["End"]["Offset"]]
                 function = {"name": node["Name"]["Value"], "fingerprint": syntax_fingerprint(syntax)}
+                # A body may run long after its declaration's enclosing block.
+                entered_redirect_rows = ()
             if node.get("Type") in {"CmdSubst", "ProcSubst"}:
                 substitutions += (node["End"]["Line"],)
             if "Cmd" not in node and node.get("Redirs"):
@@ -141,11 +144,20 @@ def command_sites(source):
                 syntax = source[node["Pos"]["Offset"]:node["End"]["Offset"]]
                 sites.append({"kind": "RedirectOnly", "anchor": node["Pos"]["Line"], "rows": sorted(rows),
                               "fingerprint": syntax_fingerprint(syntax), "function": function,
+                              "entered_redirect_rows": sorted(entered_redirect_rows),
                               "runtime_lines": sorted({node["Pos"]["Line"], node["End"]["Line"], *substitutions})})
             if "Cmd" in node:
                 command = node["Cmd"]
                 if command["Type"] in CONTAINERS and node.get("Redirs"):
-                    raise CoverageError("unsupported compound command redirection")
+                    if command["Type"] not in {"Block", "WhileClause"}:
+                        raise CoverageError("unsupported compound command redirection")
+                    for redirect in node["Redirs"]:
+                        compound_redirect_rows.update(word_rows(redirect))
+                        compound_redirect_rows.update(word_rows(redirect.get("Word")))
+                    sites.append({"kind": command["Type"] + "Redirection",
+                                  "anchor": node["Redirs"][0]["Pos"]["Line"],
+                                  "rows": sorted(compound_redirect_rows), "fingerprint": None,
+                                  "function": function, "runtime_lines": []})
                 kind = command["Type"]
                 if kind not in EXECUTABLE | CONTAINERS:
                     raise CoverageError("unsupported Bash command node: " + kind)
@@ -165,9 +177,15 @@ def command_sites(source):
                     fingerprint = "control:" + kind if kind in {"ForClause", "CaseClause", "TimeClause", "CoprocClause"} else syntax_fingerprint(syntax)
                     sites.append({"kind": kind, "anchor": anchor, "rows": sorted(rows),
                                   "fingerprint": fingerprint, "function": function,
+                                  "entered_redirect_rows": sorted(entered_redirect_rows),
                                   "runtime_lines": sorted({anchor, command["End"]["Line"], *substitutions})})
-            for value in node.values():
-                visit(value, substitutions, function)
+            for key, value in node.items():
+                # Bash applies container redirects before its commands/conditions,
+                # but target substitutions run before redirect success is known.
+                entered = set(entered_redirect_rows)
+                if key == "Cmd":
+                    entered.update(compound_redirect_rows)
+                visit(value, substitutions, function, tuple(sorted(entered)))
     visit(tree)
     return sites
 
@@ -204,7 +222,7 @@ def fraction(covered, owned):
             "passed": percent is not None and percent >= MINIMUM}
 
 
-def summarize(root, sources, hits, changed):
+def summarize(root, sources, hits, changed, hook=None):
     if sources != snapshot(root):
         raise CoverageError("stale or incomplete source snapshot")
     files = []
@@ -223,14 +241,20 @@ def summarize(root, sources, hits, changed):
             function = {"name": function_name, "fingerprint": definition} if function_name else None
             candidates = [site for site in sites if runtime in site["runtime_lines"]
                           and fingerprint == site["fingerprint"] and function == site["function"]]
-            if len({tuple(site["rows"]) for site in candidates}) > 1:
+            if len({(tuple(site["rows"]), tuple(site.get("entered_redirect_rows", [])))
+                    for site in candidates}) > 1:
                 ambiguous.append({"runtime_row": runtime, "fingerprint": fingerprint,
                                   "candidate_anchors": sorted(site["anchor"] for site in candidates)})
                 continue
             for site in candidates:
                 covered.update(site["rows"])
+                covered.update(site.get("entered_redirect_rows", []))
         support = "/fixtures/" in name or Path(name).name.startswith("test-")
         group = "tooling" if name == "Scripts/coverage/release-trace-hook.sh" else ("support" if support else "production")
+        if group == "tooling" and hook is not None:
+            if hook["source_sha256"] != sources[name] or not set(hook["covered_rows"]) <= owned:
+                raise CoverageError("stale or malformed hook coverage")
+            covered = set(hook["covered_rows"])
         added = owned & changed.get(name, set())
         files.append({"path": name, "scope": group, **fraction(covered, owned),
                       "owned": sorted(owned), "covered_rows": sorted(covered),
@@ -244,6 +268,65 @@ def summarize(root, sources, hits, changed):
     if not files:
         raise CoverageError("missing Bash production source")
     return {"files": files, **{key: fraction(*values) for key, values in groups.items()}}
+
+
+def file_identity(path):
+    def identity(value):
+        return [value.st_dev, value.st_ino, value.st_mode, value.st_size, value.st_mtime_ns, value.st_ctime_ns]
+    return {"stat": identity(path.stat()), "lstat": identity(path.lstat()),
+            "link": os.readlink(path) if path.is_symlink() else None}
+
+
+def hook_coverage(data, hook=HOOK):
+    """Measure the hook using independent xtrace, never its DEBUG event output."""
+    runs = data.get("runs", [])
+    if not runs:
+        raise CoverageError("missing independent hook trace")
+    if data.get("tests_passed") is not True:
+        raise CoverageError("failed or incomplete hook fixtures")
+    current_sha = digest(hook)
+    sites = command_sites(hook.read_bytes())
+    owned = {row for site in sites for row in site["rows"]}
+    observed, by_version = set(), {}
+    for run in runs:
+        source = Path(run["source_path"])
+        if (run["source_sha256"] != current_sha or digest(source) != current_sha
+                or run["before"] != run["after"] or file_identity(source) != run["after"]):
+            raise CoverageError("stale independent hook source")
+        if run["parser"] != PARSER_VERSION or run["exit"] != 0 or run["parity"] is not True:
+            raise CoverageError("failed hook trace/parity evidence")
+        version = run["bash"]
+        if not version.startswith(("5.3.15(", "3.2.57(")):
+            raise CoverageError("unsupported hook trace Bash")
+        nonce = run["nonce"]
+        if not re.fullmatch(r"[0-9a-f]{16}|[0-9a-f]{32}", nonce):
+            raise CoverageError("malformed hook trace nonce")
+        trace_path = Path(run["trace_path"])
+        raw = trace_path.read_bytes()
+        trailer = ("FORGE_META_COMPLETE_" + nonce + "\n").encode()
+        if digest(trace_path) != run["trace_sha256"] or not raw.endswith(trailer):
+            raise CoverageError("stale or truncated independent hook trace")
+        prefix = re.compile(rb"^\++FORGE_META_" + nonce.encode() + rb"\t([^\t]+)\t([0-9]+)\t([^\t]+)\t([0-9]+)\t")
+        rows = set()
+        for line in raw.splitlines():
+            event = prefix.match(line)
+            event_source = Path(os.fsdecode(event[3])) if event else None
+            if event_source is not None and not event_source.is_absolute():
+                event_source = Path(run.get("cwd", ".")) / event_source
+            if event and event_source.resolve() == source.resolve():
+                if event[1].decode() != version or int(event[2]) <= 0 or int(event[4]) <= 0:
+                    raise CoverageError("malformed independent hook event")
+                rows.add(int(event[4]))
+        if not rows:
+            raise CoverageError("missing hook source events")
+        observed.update(rows)
+        by_version.setdefault(version, set()).update(rows)
+    covered = {row for site in sites if set(site["runtime_lines"]) & observed for row in site["rows"]}
+    versions = {version: sorted({row for site in sites if set(site["runtime_lines"]) & rows for row in site["rows"]})
+                for version, rows in by_version.items()}
+    return {**fraction(covered, owned), "source_sha256": current_sha, "owned": sorted(owned),
+            "covered_rows": sorted(covered), "uncovered": sorted(owned - covered),
+            "rows_by_bash_version": versions, "runs": runs}
 
 
 def event_fingerprint(command):
@@ -260,6 +343,9 @@ def finalize_events(root, directory, sources):
     for name, sha in sources.items():
         aliases.setdefault(sha, []).append(name)
     events, external = set(), set()
+    failure_flag = directory / "write-failures"
+    if failure_flag.exists() and failure_flag.stat().st_size:
+        raise CoverageError("incomplete trace: hook write failure")
     if list((directory / "temporary-events").glob("*.unsupported")):
         raise CoverageError("unsupported child Bash interpreter")
     for path in sorted((directory / "temporary-events").glob("*.events")):
@@ -355,13 +441,14 @@ def collect(root, directory, entry, base):
     sources = snapshot(root)
     directory.mkdir(parents=True, exist_ok=False)
     (directory / "temporary-events").mkdir()
+    (directory / "write-failures").write_text("")
     helper = directory / "trace-environment.sh"
     shutil.copyfile(HOOK, helper)
     started = time.time_ns()
     environment = os.environ.copy()
     environment.update({"PATH": str(Path(bash).parent) + os.pathsep + environment["PATH"],
                         "BASH_ENV": str(helper), "FORGERULES_COVERAGE_EVENTS": str(directory / "temporary-events"),
-                        "FORGERULES_COVERAGE_HASHER": "/usr/bin/openssl"})
+                        "FORGERULES_COVERAGE_HASHER": "/usr/bin/openssl", "FORGERULES_COVERAGE_FAILURE": str(directory / "write-failures")})
     command = [bash, str(root / entry)]
     with (directory / "run.log").open("wb") as log:
         result = subprocess.run(command, shell=False, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT)
@@ -386,6 +473,7 @@ def main(argv=None):
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--base", default=BASE)
     parser.add_argument("--entry", default="Scripts/test-verify-release-assets.sh")
+    parser.add_argument("--hook-evidence", type=Path)
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
@@ -397,10 +485,12 @@ def main(argv=None):
         head = checked(["git", "rev-parse", "HEAD"], cwd=root).decode().strip()
         base = resolve_commit(root, args.base)
         sources, hits, records = load_evidence(root, args.directories, base, head)
-        result = summarize(root, sources, hits, changed_rows(root, base))
+        hook = hook_coverage(json.loads(args.hook_evidence.read_text())) if args.hook_evidence else None
+        result = summarize(root, sources, hits, changed_rows(root, base), hook)
         result.update({"base": base, "head": head, "sources": sources, "runs": records})
+        result["hook_tooling"] = hook if hook is not None else {"passed": False, "percent": None, "reason": "missing independent hook evidence"}
         print(json.dumps(result, indent=2))
-        return 0 if result["production"]["passed"] and result["changed_production"]["passed"] else 1
+        return 0 if result["production"]["passed"] and result["changed_production"]["passed"] and hook and hook["passed"] else 1
     except (CoverageError, OSError, ValueError, KeyError, TypeError) as error:
         print("coverage error: " + str(error), file=sys.stderr)
         return 2

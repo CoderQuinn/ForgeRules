@@ -25,3 +25,5 @@ The collector and its negative/parity fixtures are reviewed separately before fi
 Independent collector review requested corrections for actual sourced-file identity, transient source changes, per-child Bash pinning and redirect-only ownership. The fix slice retains RED evidence and separate re-review before final collection. All earlier numeric release reports are diagnostic, not qualification.
 
 The next correction binds runtime loaded definitions to the exact enclosing source function, rejects ambiguous same-name declarations and canonicalizes the base commit before evidence creation. Cached-function/removed-guard and invalid-base RED cases precede this implementation. Extracted-hook measurement and whole-production gates remain open.
+
+Combined checkpoint integrates the independently reviewed block/while redirect patch with first-class hook meta-evidence and failure-neutral logging. All source scopes remain separate; whole-release numeric qualification still requires fresh committed-source collection after all test/support files are frozen.
