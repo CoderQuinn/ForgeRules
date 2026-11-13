@@ -27,7 +27,7 @@ class CoverageError(Exception):
 
 
 def checked(command, **kwargs):
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+    result = subprocess.run(command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
     if result.returncode:
         raise CoverageError("command failed: " + repr(command) + "\n" + result.stderr.decode())
     return result.stdout
@@ -97,8 +97,19 @@ def command_sites(source):
         elif isinstance(node, dict):
             if node.get("Type") in {"CmdSubst", "ProcSubst"}:
                 substitutions += (node["End"]["Line"],)
+            if "Cmd" not in node and node.get("Redirs"):
+                rows = set()
+                for redirect in node["Redirs"]:
+                    rows.update(word_rows(redirect))
+                    rows.update(word_rows(redirect.get("Word")))
+                syntax = source[node["Pos"]["Offset"]:node["End"]["Offset"]]
+                sites.append({"kind": "RedirectOnly", "anchor": node["Pos"]["Line"], "rows": sorted(rows),
+                              "fingerprint": syntax_fingerprint(syntax),
+                              "runtime_lines": sorted({node["Pos"]["Line"], node["End"]["Line"], *substitutions})})
             if "Cmd" in node:
                 command = node["Cmd"]
+                if command["Type"] in CONTAINERS and node.get("Redirs"):
+                    raise CoverageError("unsupported compound command redirection")
                 kind = command["Type"]
                 if kind not in EXECUTABLE | CONTAINERS:
                     raise CoverageError("unsupported Bash command node: " + kind)
@@ -208,12 +219,16 @@ def finalize_events(root, directory, sources):
     for name, sha in sources.items():
         aliases.setdefault(sha, []).append(name)
     events, external = set(), set()
+    if list((directory / "temporary-events").glob("*.unsupported")):
+        raise CoverageError("unsupported child Bash interpreter")
     for path in sorted((directory / "temporary-events").glob("*.events")):
         fields = path.read_bytes().split(b"\0")
-        if fields[-1] != b"" or (len(fields) - 1) % 4:
+        if fields[-1] != b"" or (len(fields) - 1) % 5:
             raise CoverageError("malformed native trace events")
-        for index in range(0, len(fields) - 1, 4):
-            source, row, command, source_sha = fields[index:index + 4]
+        for index in range(0, len(fields) - 1, 5):
+            source, row, command, source_sha, bash_version = fields[index:index + 5]
+            if not bash_version.decode().startswith("5.3.15("):
+                raise CoverageError("unsupported event Bash interpreter")
             name = Path(source.decode())
             name = (root / name).resolve() if not name.is_absolute() else name.resolve()
             if root in name.parents:
@@ -227,10 +242,12 @@ def finalize_events(root, directory, sources):
             if name not in sources:
                 external.add(str(name))
                 continue
+            if source_sha.decode() != sources[name]:
+                raise CoverageError("stale runtime source digest: " + name)
             number = int(row)
             if number <= 0:
                 raise CoverageError("invalid native trace row")
-            events.add((name, number, event_fingerprint(command)))
+            events.add((name, number, event_fingerprint(command), source_sha.decode(), bash_version.decode()))
     if not events:
         raise CoverageError("missing native trace events")
     output = directory / "events.json"
@@ -248,14 +265,16 @@ def load_evidence(root, directories, base, head):
         if record["exit"] != 0 or record["finished_ns"] < record["started_ns"]:
             raise CoverageError("failed or incomplete trace run")
         if (record["parser"] != PARSER_VERSION or not record["bash"].startswith("GNU bash, version 5.3.15(")
-                or type(record["trace_format"]) is not int or record["trace_format"] != 1):
+                or type(record["trace_format"]) is not int or record["trace_format"] != 2):
             raise CoverageError("unsupported trace tool versions")
         if digest(directory / "trace-environment.sh") != record["helper_sha256"]:
             raise CoverageError("stale trace helper")
         events = directory / "events.json"
         if digest(events) != record["events_sha256"]:
             raise CoverageError("stale trace digest")
-        for name, row, fingerprint in json.loads(events.read_text())["events"]:
+        for name, row, fingerprint, runtime_sha, runtime_bash in json.loads(events.read_text())["events"]:
+            if name not in sources or runtime_sha != sources[name] or not runtime_bash.startswith("5.3.15("):
+                raise CoverageError("stale source digest or unsupported event Bash")
             if (name not in sources or not isinstance(row, int) or isinstance(row, bool) or row <= 0
                     or not isinstance(fingerprint, str)
                     or not re.fullmatch(r"[0-9a-f]{64}|control:(ForClause|CaseClause|TimeClause|CoprocClause)", fingerprint)):
@@ -278,14 +297,24 @@ def collect(root, directory, entry, base):
     directory.mkdir(parents=True, exist_ok=False)
     (directory / "temporary-events").mkdir()
     helper = directory / "trace-environment.sh"
-    helper.write_text('''# Native Bash DEBUG tracing; unexpanded command syntax is temporary only.
-__forge_main_sha=""
-if [[ -f "$0" ]]; then
-    __forge_main_sha="$(shasum -a 256 "$0")"
-    __forge_main_sha="${__forge_main_sha%% *}"
+    helper.write_text('''# Native Bash tracing. Every event hashes its actual source; no identity cache.
+if [[ "$BASH_VERSION" != 5.3.15\\(* ]]; then
+    printf "%s\\n" "$BASH_VERSION" >"${FORGERULES_COVERAGE_EVENTS}/${BASHPID:-$$}.unsupported"
+    return 0
 fi
 set -T
-trap 'printf "%s\\0%s\\0%s\\0%s\\0" "${BASH_SOURCE[0]:-$0}" "$LINENO" "$BASH_COMMAND" "$__forge_main_sha" >>"${FORGERULES_COVERAGE_EVENTS}/${BASHPID}.events"' DEBUG
+trap '__forge_source="${BASH_SOURCE[0]-}" __forge_row="$LINENO" __forge_command="$BASH_COMMAND"
+__forge_sha="missing"
+set +T
+if [[ -n "$__forge_source" && -f "$__forge_source" ]]; then
+    if __forge_sha="$(/usr/bin/openssl dgst -sha256 -r "$__forge_source" 2>/dev/null)"; then
+        __forge_sha="${__forge_sha%% *}"
+    else
+        __forge_sha="missing"
+    fi
+fi
+set -T
+printf "%s\\0%s\\0%s\\0%s\\0%s\\0" "${__forge_source:-@bash-c:$0}" "$__forge_row" "$__forge_command" "$__forge_sha" "$BASH_VERSION" >>"${FORGERULES_COVERAGE_EVENTS}/${BASHPID}.events"' DEBUG
 ''')
     started = time.time_ns()
     environment = os.environ.copy()
@@ -293,15 +322,16 @@ trap 'printf "%s\\0%s\\0%s\\0%s\\0" "${BASH_SOURCE[0]:-$0}" "$LINENO" "$BASH_COM
                         "BASH_ENV": str(helper), "FORGERULES_COVERAGE_EVENTS": str(directory / "temporary-events")})
     command = [bash, str(root / entry)]
     with (directory / "run.log").open("wb") as log:
-        result = subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT)
+        result = subprocess.run(command, shell=False, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT)
     if sources != snapshot(root):
         raise CoverageError("source changed during trace collection")
     events = finalize_events(root, directory, sources)
     record = {"sources": sources, "base": base,
               "head": checked(["git", "rev-parse", "HEAD"], cwd=root).decode().strip(),
-              "parser": parser_version, "bash": bash_version, "trace_format": 1,
+              "parser": parser_version, "bash": bash_version, "trace_format": 2,
               "command": command, "exit": result.returncode, "started_ns": started,
-              "finished_ns": time.time_ns(), "events_sha256": digest(events), "helper_sha256": digest(helper)}
+              "finished_ns": time.time_ns(), "events_sha256": digest(events), "helper_sha256": digest(helper),
+              "hash_backend": checked(["/usr/bin/openssl", "version"]).decode().strip()}
     (directory / "evidence.json").write_text(json.dumps(record, indent=2) + "\n")
     if result.returncode:
         raise CoverageError("trace command failed; inspect " + str(directory / "run.log"))

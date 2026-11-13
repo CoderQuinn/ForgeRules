@@ -210,6 +210,8 @@ cat <(printf process) >out
         with mock.patch.object(self.collector, "checked", side_effect=[b"v3.12.0", b'{"Cmd":{"Type":"FutureCommand"}}']):
             with self.assertRaisesRegex(self.collector.CoverageError, "unsupported Bash"):
                 self.collector.command_sites(b":")
+        with self.assertRaisesRegex(self.collector.CoverageError, "compound command redirection"):
+            self.collector.command_sites(b"{\n :\n} > output\n")
 
     def test_changed_row_parser_includes_continuations_and_zero_count_hunks(self):
         diff = b'''diff --git a/Scripts/a.sh b/Scripts/a.sh
@@ -236,11 +238,11 @@ cat <(printf process) >out
         directory = root / "evidence"
         directory.mkdir()
         fingerprint = self.collector.syntax_fingerprint(b"printf covered")
-        (directory / "events.json").write_text(json.dumps({"events": [["Scripts/probe.sh", 1, fingerprint]]}))
+        (directory / "events.json").write_text(json.dumps({"events": [["Scripts/probe.sh", 1, fingerprint, self.collector.digest(root / "Scripts/probe.sh"), "5.3.15(1)"]]}))
         (directory / "trace-environment.sh").write_text(":\n")
         record = {"sources": self.collector.snapshot(root), "base": "base", "head": "head", "exit": 0,
                   "started_ns": 1, "finished_ns": 2, "parser": "v3.12.0",
-                  "bash": "GNU bash, version 5.3.15(1)", "trace_format": 1,
+                  "bash": "GNU bash, version 5.3.15(1)", "trace_format": 2,
                   "events_sha256": self.collector.digest(directory / "events.json"),
                   "helper_sha256": self.collector.digest(directory / "trace-environment.sh")}
         (directory / "evidence.json").write_text(json.dumps(record))
@@ -249,7 +251,7 @@ cat <(printf process) >out
     def test_trace_provenance_negative_cases(self):
         for change in [{"base": "other"}, {"head": "other"}, {"sources": {}}, {"exit": 1},
                        {"finished_ns": 0}, {"parser": "future"}, {"bash": "old"},
-                       {"trace_format": 2}, {"trace_format": True}, {"bash": "GNU bash, version 5.3.150(1)"},
+                       {"trace_format": 1}, {"trace_format": True}, {"bash": "GNU bash, version 5.3.150(1)"},
                        {"events_sha256": "stale"}, {"helper_sha256": "stale"}]:
             with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -267,10 +269,10 @@ cat <(printf process) >out
             with self.subTest(event=event), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 directory, record = self.evidence_fixture(root)
-                (directory / "events.json").write_text(json.dumps({"events": [event]}))
+                (directory / "events.json").write_text(json.dumps({"events": [event + [self.collector.digest(root / "Scripts/probe.sh"), "5.3.15(1)"]]}))
                 record["events_sha256"] = self.collector.digest(directory / "events.json")
                 (directory / "evidence.json").write_text(json.dumps(record))
-                with self.assertRaisesRegex(self.collector.CoverageError, "malformed"):
+                with self.assertRaisesRegex(self.collector.CoverageError, "malformed|stale"):
                     self.collector.load_evidence(root, [directory], "base", "head")
 
     def test_temporary_event_validation_and_cloned_source_identity(self):
@@ -283,12 +285,12 @@ cat <(printf process) >out
                 directory = root / "evidence"
                 (directory / "temporary-events").mkdir(parents=True)
                 name = str(source) if mode != "relative" else "Scripts/probe.sh"
-                sha = "unmatched"
+                sha = self.collector.digest(source)
                 if mode in ("clone", "external"):
                     name = "/removed/synthetic/clone"
-                    sha = self.collector.digest(source) if mode == "clone" else sha
+                    sha = self.collector.digest(source) if mode == "clone" else "unmatched"
                 data = b"\0".join([name.encode(), b"-1" if mode == "negative" else b"1",
-                                     b"printf covered", sha.encode()]) + b"\0"
+                                     b"printf covered", sha.encode(), b"5.3.15(1)"]) + b"\0"
                 if mode == "truncated": data = data[:-1]
                 if mode == "empty": data = b""
                 (directory / "temporary-events/1.events").write_bytes(data)
@@ -338,6 +340,65 @@ cat <(printf process) >out
                 with mock.patch.object(self.collector, "checked", side_effect=checked):
                     with self.assertRaisesRegex(self.collector.CoverageError, "trace command failed|source changed"):
                         self.collector.collect(root, root / "evidence", "Scripts/probe.sh", "base")
+
+    def review_fixture(self, root, files):
+        (root / "Scripts").mkdir()
+        for name, body in files.items():
+            (root / name).write_text(body)
+            (root / name).chmod(0o755)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "add", "Scripts"], check=True)
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid.example", "commit", "-qm", "fixture"], check=True)
+
+    def test_external_source_cannot_borrow_the_main_script_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "repository"
+            root.mkdir()
+            self.review_fixture(root, {"Scripts/main.sh": 'if false; then\n printf wrongly_credited\nfi\nsource "$FIXTURE_EXTERNAL"\n'})
+            external = Path(tmp) / "external.sh"
+            external.write_text('\nprintf wrongly_credited\n')
+            with mock.patch.dict(os.environ, {"FIXTURE_EXTERNAL": str(external)}):
+                self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], "HEAD", head)
+            result = self.collector.summarize(root, sources, hits, {})
+            self.assertIn(2, result["files"][0]["uncovered"])
+            events = json.loads((root / "evidence/events.json").read_text())
+            self.assertIn(str(external.resolve()), events["external_sources"])
+
+    def test_transient_mutation_is_rejected_even_after_an_earlier_source(self):
+        for earlier_source in (False, True):
+            with self.subTest(earlier_source=earlier_source), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                prefix = "source Scripts/lib.sh\n" if earlier_source else ""
+                self.review_fixture(root, {"Scripts/main.sh": prefix + '''cp Scripts/lib.sh saved
+printf 'if true; then\n printf wrongly_credited\nfi\n' > Scripts/lib.sh
+source Scripts/lib.sh
+mv saved Scripts/lib.sh
+''', "Scripts/lib.sh": 'if false; then\n printf wrongly_credited\nfi\n'})
+                with self.assertRaisesRegex(self.collector.CoverageError, "source.*digest|stale"):
+                    self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+                self.assertEqual((root / "Scripts/lib.sh").read_text(), 'if false; then\n printf wrongly_credited\nfi\n')
+
+    def test_unsupported_child_interpreter_never_earns_coverage(self):
+        if "5.3.15(" in subprocess.check_output(["/bin/bash", "--version"], text=True):
+            self.skipTest("system Bash is the pinned interpreter")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            self.review_fixture(root, {"Scripts/main.sh": "Scripts/child.sh\n", "Scripts/child.sh": '#!/bin/bash\nprintf child\n'})
+            with self.assertRaisesRegex(self.collector.CoverageError, "unsupported.*Bash"):
+                self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+            self.assertEqual((root / "evidence/run.log").read_text(), "child")
+
+    def test_unexecuted_redirect_only_statement_remains_in_denominator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Scripts").mkdir()
+            (root / "Scripts/probe.sh").write_text('if false; then\n > never-created\nfi\n')
+            event = (1, self.collector.syntax_fingerprint(b"false"))
+            report = self.collector.summarize(root, self.collector.snapshot(root), {"Scripts/probe.sh": {event}}, {})
+            self.assertEqual(report["production"]["total"], 2)
+            self.assertEqual(report["files"][0]["uncovered"], [2])
 
 
 def executable_lines(path):
