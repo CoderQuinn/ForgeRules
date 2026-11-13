@@ -224,9 +224,10 @@ fi
             results = []
             for program in (source, declared):
                 # Pinned Bash receives only this authored synthetic program on stdin and a separate literal argument.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 result = subprocess.run([bash, "--noprofile", "--norc", "-s", "--", argument],
                                         input=program + b'\nclassify "$1"\n', capture_output=True,
-                                        env=environment, shell=False)
+                                        env=environment, shell=False)  # nosec B603
                 results.append((result.returncode, result.stdout, result.stderr))
             self.assertEqual(results, [(expected, argument.encode(), b"")] * 2)
         with tempfile.TemporaryDirectory() as tmp:
@@ -321,6 +322,46 @@ printf after
             # Bash reports the producer at the outer statement's final row 13;
             # it has no approved alias there and remains conservatively uncovered.
             self.assertEqual(report["files"][0]["uncovered"], [7, 10])
+
+    def test_subshell_redirect_rows_require_an_executed_body(self):
+        source = '''set -euo pipefail
+(
+ printf created
+) > result
+if false; then
+ (
+  printf skipped
+ ) > skipped
+fi
+(
+ printf forbidden
+) > "$(
+ printf absent
+)/output" ||
+ :
+printf survived
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report = self.native_fixture_report(root, {"Scripts/main.sh": source})
+            self.assertEqual((root / "result").read_text(), "created")
+            self.assertFalse((root / "skipped").exists())
+            self.assertTrue((root / "evidence/run.log").read_text().endswith("survived"))
+            self.assertNotIn("forbidden", (root / "evidence/run.log").read_text())
+            self.assertEqual(report["files"][0]["uncovered"], [7, 8, 11, 12, 13])
+            self.assertIn(4, report["files"][0]["covered_rows"])
+
+    def test_subshell_redirection_target_cannot_prove_its_own_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Scripts").mkdir()
+            source = b'(\n printf forbidden\n) > "$(\n printf absent\n)/out"\n'
+            (root / "Scripts/probe.sh").write_bytes(source)
+            event = (4, self.collector.syntax_fingerprint(b"printf absent"))
+            report = self.collector.summarize(root, self.collector.snapshot(root),
+                                              {"Scripts/probe.sh": {event}}, {})
+            self.assertEqual(report["files"][0]["covered_rows"], [4])
+            self.assertEqual(report["files"][0]["uncovered"], [2, 3])
 
     def test_skipped_and_failed_redirects_cannot_borrow_target_substitution_events(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -421,7 +462,8 @@ later
     def native_fixture_report(self, root, files):
         self.review_fixture(root, files)
         self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
-        head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        # Fixed git argv reads only the private fixture repository through the trusted developer PATH.
+        head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()  # nosec B603, B607
         sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
         return self.collector.summarize(root, sources, hits, {})
 

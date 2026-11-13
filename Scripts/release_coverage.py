@@ -168,7 +168,7 @@ def command_sites(source):
             if "Cmd" in node:
                 command = node["Cmd"]
                 if command["Type"] in CONTAINERS and node.get("Redirs"):
-                    if command["Type"] not in {"Block", "WhileClause"}:
+                    if command["Type"] not in {"Block", "WhileClause", "Subshell"}:
                         raise CoverageError("unsupported compound command redirection")
                     for redirect in node["Redirs"]:
                         compound_redirect_rows.update(word_rows(redirect))
