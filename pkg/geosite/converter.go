@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/CoderQuinn/ForgeRules/internal/boundedinput"
 	pb "github.com/CoderQuinn/ForgeRules/proto"
 	"google.golang.org/protobuf/proto"
 )
@@ -31,7 +32,7 @@ type GeoSiteListJSON struct {
 // DatToJSON converts a geosite.dat file to geosite.json
 func DatToJSON(datPath, jsonPath string) error {
 	// Read the .dat file
-	data, err := os.ReadFile(datPath)
+	data, err := boundedinput.ReadFile(datPath, boundedinput.GeoSiteBytes)
 	if err != nil {
 		return fmt.Errorf("failed to read dat file: %w", err)
 	}

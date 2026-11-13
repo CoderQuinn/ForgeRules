@@ -16,6 +16,40 @@ Whole-output-directory atomic promotion is a separate independently reviewable s
 
 Keep existing CLI, formats, source lock, download hashes and immutable release semantics. Synthetic fixtures only. No upstream lock refresh, network release, merge or tag. Rollback reverts additive limit enforcement; published bundles are never overwritten.
 
+## Frozen input budgets (2026-11-14, before production changes)
+
+Public GitHub release metadata was read for the exact tags already in
+`rules.sources.lock.json`; asset sizes match every declaration in that lock:
+
+| Input | Pinned tag | Declared bytes | Public evidence |
+| --- | --- | ---: | --- |
+| Official GeoSite `dlc.dat` | `20260827152101` | 2,283,258 | [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community/releases/tag/20260827152101) |
+| Official GeoIP `geoip.dat` | `202608050239` | 23,080,744 | [v2fly/geoip](https://github.com/v2fly/geoip/releases/tag/202608050239) |
+| Loyalsoldier GeoSite `geosite.dat` | `202608290326` | 11,005,730 | [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat/releases/tag/202608290326) |
+| Loyalsoldier GeoIP `geoip.dat` | `202608290326` | 17,224,069 | [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat/releases/tag/202608290326) |
+
+Freeze separate inclusive ceilings at **32 MiB (33,554,432 bytes) for GeoSite**,
+**64 MiB (67,108,864 bytes) for GeoIP**, and **1 MiB (1,048,576 bytes) for source-lock
+JSON**, including the provenance reread. The protobuf ceilings leave approximately
+3.05x and 2.91x headroom above the largest current pins. The reviewed lock is
+1,951 bytes; its separate ceiling permits substantial provenance growth without
+letting JSON whitespace or fields consume an unbounded buffer. These are absolute
+input-byte ceilings, not heap or decoded-record-count guarantees. Future sources
+that exceed them need an explicitly reviewed budget change; there is no CLI
+bypass or automatic increase.
+
+Source-lock validation rejects each declared size above its kind's ceiling.
+The existing generic downloader also rejects declarations above the largest
+64 MiB ceiling before a request or `size+1` arithmetic, preserving its interface.
+All accepted downloads remain limited to their exact declared size plus one probe
+byte and require the existing size/hash checks. Local regular-file size checks
+may reject early, but every protobuf/JSON stream must still use a limit-plus-one
+read so growth after stat and unknown-length input cannot bypass the budget.
+Generated artifact hashing remains streaming with bounded working memory; it is
+not an untrusted protobuf/JSON input decode and retains its existing byte-count
+and digest behavior. Release metadata checks do not claim downloaded-byte/hash
+revalidation of the public source assets.
+
 ## Candidate review corrections (separate slice, execute first)
 
 Astra's 2026-11-14 exact-head review reproduced two failures in PR17. These are inside the existing fail-closed/immutable release contract and need fixes before candidate readiness:

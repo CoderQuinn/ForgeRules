@@ -266,3 +266,26 @@ func (errorReader) Read([]byte) (int, error) {
 func stringsOf(character string, count int) string {
 	return strings.Repeat(character, count)
 }
+
+func TestDownloadRejectsOversizedDeclarationBeforeRequest(t *testing.T) {
+	t.Parallel()
+	for _, size := range []int64{(64 << 20) + 1, 9223372036854775807} {
+		requested := false
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			requested = true
+			return nil, errors.New("unexpected network request")
+		})}
+		path := filepath.Join(t.TempDir(), "rules.dat")
+		if err := os.WriteFile(path, []byte("last-known-good"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := downloadVerifiedFileWithClient(client, "https://example.invalid/rules.dat", path, strings.Repeat("a", 64), size)
+		if err == nil || !strings.Contains(err.Error(), "byte limit") || requested {
+			t.Errorf("size %d: error=%v requested=%v", size, err, requested)
+		}
+		actual, err := os.ReadFile(path)
+		if err != nil || string(actual) != "last-known-good" {
+			t.Fatalf("target changed: %q (%v)", actual, err)
+		}
+	}
+}

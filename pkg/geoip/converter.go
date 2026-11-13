@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/CoderQuinn/ForgeRules/internal/boundedinput"
 	pb "github.com/CoderQuinn/ForgeRules/proto"
 	"github.com/maxmind/mmdbwriter"
 	"github.com/maxmind/mmdbwriter/mmdbtype"
@@ -50,7 +51,7 @@ func datToMMDBWithOptions(
 	}
 
 	// Read the .dat file
-	data, err := os.ReadFile(datPath)
+	data, err := boundedinput.ReadFile(datPath, boundedinput.GeoIPBytes)
 	if err != nil {
 		return fmt.Errorf("failed to read dat file: %w", err)
 	}

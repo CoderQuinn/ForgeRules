@@ -18,18 +18,19 @@ trap cleanup EXIT
     cd "${repository_root}"
 
     # go list defines the complete active handwritten production source set.
-    # cmd/forgerules and every package below pkg are mandatory roots. Generated
-    # proto/*.pb.go stays outside the measured roots, while ./... still compiles
+    # cmd/forgerules and all packages below pkg and internal are mandatory roots.
+    # Generated proto/*.pb.go stays outside the measured roots; ./... compiles
     # and tests it below.
     go list \
         -f '{{range .GoFiles}}{{printf "%s/%s\n" $.Dir .}}{{end}}{{range .CgoFiles}}{{printf "%s/%s\n" $.Dir .}}{{end}}' \
         ./cmd/forgerules \
-        ./pkg/... | LC_ALL=C sort -u >"${production_files}"
+        ./pkg/... \
+        ./internal/... | LC_ALL=C sort -u >"${production_files}"
 
     go test \
         -count=1 \
         -covermode=atomic \
-        -coverpkg=./cmd/forgerules,./pkg/... \
+        -coverpkg=./cmd/forgerules,./pkg/...,./internal/... \
         -coverprofile="${coverage_profile}" \
         ./...
 

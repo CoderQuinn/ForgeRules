@@ -191,3 +191,44 @@ func readGeoSiteOutput(t *testing.T, directory string) []byte {
 	}
 	return data
 }
+
+// Catches an unbounded file read reaching protobuf decode instead of rejecting
+// oversized bytes, and any replacement of an existing output on that failure.
+func TestDatToJSONRejectsOversizedSparseInputAndPreservesOutput(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	input := filepath.Join(directory, "oversized.dat")
+	file, err := os.Create(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(33554432 + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(directory, "geosite.json")
+	if err := os.WriteFile(output, []byte("last-known-good"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = DatToJSON(input, output)
+	if err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("oversized input error = %v, want byte-limit rejection before protobuf decode", err)
+	}
+	actual, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != "last-known-good" {
+		t.Fatalf("existing output changed: %q", actual)
+	}
+	fresh := filepath.Join(directory, "fresh.json")
+	if err := DatToJSON(input, fresh); err == nil {
+		t.Fatal("oversized input accepted")
+	}
+	if _, err := os.Stat(fresh); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fresh output published: %v", err)
+	}
+}

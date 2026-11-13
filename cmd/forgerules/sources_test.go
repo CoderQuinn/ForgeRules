@@ -229,3 +229,69 @@ func validLockedSourceJSON() string {
 		}
 	}`, strings.Repeat("1", 40), strings.Repeat("a", 64), strings.Repeat("2", 40), strings.Repeat("b", 64))
 }
+
+// Catches a decoder that accepts oversized whitespace, including streamed input.
+func TestDecodeSourceLockEnforcesByteBudget(t *testing.T) {
+	t.Parallel()
+	const limit = 1 << 20
+	valid := validSourceLockJSON()
+	exact := valid + strings.Repeat(" ", limit-len(valid))
+	if _, err := decodeSourceLock(strings.NewReader(exact)); err != nil {
+		t.Fatalf("exact-limit lock rejected: %v", err)
+	}
+	if _, err := decodeSourceLock(strings.NewReader(exact + " ")); err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("oversized lock error = %v", err)
+	}
+	if _, err := decodeSourceLock(errorReader{}); err == nil || !strings.Contains(err.Error(), "injected response read failure") {
+		t.Fatalf("lock read failure = %v", err)
+	}
+}
+
+// Catches size declarations that could reach download size+1 arithmetic before
+// the kind-specific absolute budget is checked.
+func TestSourceLockRejectsOversizedDeclarations(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, field string
+		size        int64
+	}{
+		{"geosite", `"size": 5`, (32 << 20) + 1},
+		{"geoip", `"size": 5,`, (64 << 20) + 1},
+		{"overflow", `"size": 5,`, 9223372036854775807},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			contents := strings.Replace(validSourceLockJSON(), test.field, fmt.Sprintf(`"size": %d`, test.size)+strings.TrimPrefix(test.field, `"size": 5`), 1)
+			if _, err := decodeSourceLock(strings.NewReader(contents)); err == nil || !strings.Contains(err.Error(), "byte limit") {
+				t.Fatalf("oversized declaration error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadSourceLockRejectsOversizedSparseInput(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "oversized.json")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate((1 << 20) + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSourceLock(path); err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("oversized lock error = %v", err)
+	}
+}
+
+func TestSourceLockAcceptsExactDeclarationBudgets(t *testing.T) {
+	t.Parallel()
+	contents := strings.Replace(validSourceLockJSON(), `"size": 5`, `"size": 33554432`, 1)
+	contents = strings.Replace(contents, `"size": 5`, `"size": 67108864`, 1)
+	if _, err := decodeSourceLock(strings.NewReader(contents)); err != nil {
+		t.Fatalf("exact declaration budgets rejected: %v", err)
+	}
+}

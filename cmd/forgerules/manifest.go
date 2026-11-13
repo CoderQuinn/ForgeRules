@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/CoderQuinn/ForgeRules/internal/boundedinput"
 )
 
 const (
@@ -22,10 +24,10 @@ const (
 )
 
 type releaseManifest struct {
-	SchemaVersion int                 `json:"schemaVersion"`
-	Converter     converterProvenance `json:"converter"`
+	SchemaVersion int                  `json:"schemaVersion"`
+	Converter     converterProvenance  `json:"converter"`
 	SourceLock    sourceLockProvenance `json:"sourceLock"`
-	Bundles       []bundleProvenance  `json:"bundles"`
+	Bundles       []bundleProvenance   `json:"bundles"`
 }
 
 type converterProvenance struct {
@@ -76,7 +78,7 @@ func writeBuildMetadata(
 	if err != nil {
 		return fmt.Errorf("open source lock for provenance: %w", err)
 	}
-	lockContents, err := io.ReadAll(lockFile)
+	lockContents, err := boundedinput.ReadAll(lockFile, boundedinput.SourceLockBytes)
 	closeErr := lockFile.Close()
 	if err != nil {
 		return fmt.Errorf("read source lock for provenance: %w", err)
