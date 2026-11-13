@@ -217,7 +217,8 @@ func TestDatToJSONRejectsOversizedSparseInputAndPreservesOutput(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "byte limit") {
 		t.Fatalf("oversized input error = %v, want byte-limit rejection before protobuf decode", err)
 	}
-	actual, err := os.ReadFile(output)
+	// The path is t.TempDir() plus the fixed geosite.json name, with no external input.
+	actual, err := os.ReadFile(output) // nosemgrep: go_filesystem_rule-fileread
 	if err != nil {
 		t.Fatal(err)
 	}

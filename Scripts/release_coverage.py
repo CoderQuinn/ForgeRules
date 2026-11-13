@@ -29,8 +29,8 @@ class CoverageError(Exception):
 
 
 def checked(command, **kwargs):
-    # Internal argv selects trusted git/parser/hash tools; source data is passed on stdin.
-    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    # Internal argv trusts developer PATH/BASH/SHFMT tools; source data is passed on stdin.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
     result = subprocess.run(command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)  # nosec B603
     if result.returncode:
         raise CoverageError("command failed: " + repr(command) + "\n" + result.stderr.decode())
@@ -513,7 +513,7 @@ def collect(root, directory, entry, base):
     command = [bash, str(root / entry)]
     with (directory / "run.log").open("wb") as log:
         # Pinned Bash executes the explicitly selected repository entry as a separate argv operand.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         result = subprocess.run(command, shell=False, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT)  # nosec B603
     if sources != snapshot(root):
         raise CoverageError("source changed during trace collection")

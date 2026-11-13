@@ -161,7 +161,7 @@ def validation_cases():
         yield Case("validation/" + name, script, args, exit_status=64)
     create_args = scripts["create-draft-release.sh"]
     for name, environment in (
-        ("missing-token", {"GH_TOKEN": ""}),
+        ("missing-token", {"GH_TOKEN": ""}),  # nosec B105  # Empty token exercises required-token rejection.
         ("missing-output", {"GITHUB_OUTPUT": ""}),
         ("unwritable-output", {"GITHUB_OUTPUT": "{root}"}),
     ):
@@ -482,7 +482,7 @@ def run_case(case, base):
                      "{missing}": str(directory / "missing"), "{output}": str(output)}
     environment = {key: value for key, value in os.environ.items() if not key.startswith("FORGERULES_TEST_")}
     environment.update({"PATH": str(base / "bin") + os.pathsep + environment.get("PATH", ""),
-                        "GH_TOKEN": "local-fixture-token", "GITHUB_OUTPUT": str(output),
+                        "GH_TOKEN": "local-fixture-token", "GITHUB_OUTPUT": str(output),  # nosec B105  # Synthetic token for copied local gh/curl only.
                         "FORGERULES_TEST_ARTIFACTS": str(artifacts),
                         "FORGERULES_TEST_STATE_DIR": str(state), "FORGERULES_TEST_API_PLAN": str(plan),
                         "FORGERULES_TEST_CURL_PLAN": str(curl_plan)})

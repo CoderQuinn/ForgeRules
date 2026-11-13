@@ -77,7 +77,8 @@ func TestReadAllRejectsFileGrowingAfterStat(t *testing.T) {
 	if err := os.WriteFile(path, []byte("ab"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	file, err := os.Open(path)
+	// The path is t.TempDir() plus the fixed growing name, with no external input.
+	file, err := os.Open(path) // nosemgrep: go_filesystem_rule-fileread
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,8 @@ func TestReadFileBoundariesSparseAndReadFailure(t *testing.T) {
 			t.Fatalf("data=%q error=%v", data, err)
 		}
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	// The path is t.TempDir() plus the fixed input name, with no external input.
+	file, err := os.OpenFile(path, os.O_WRONLY, 0) // nosemgrep: go_filesystem_rule-fileread
 	if err != nil {
 		t.Fatal(err)
 	}

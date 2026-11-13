@@ -283,7 +283,8 @@ func TestDownloadRejectsOversizedDeclarationBeforeRequest(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "byte limit") || requested {
 			t.Errorf("size %d: error=%v requested=%v", size, err, requested)
 		}
-		actual, err := os.ReadFile(path)
+		// The path is t.TempDir() plus the fixed rules.dat name, with no external input.
+		actual, err := os.ReadFile(path) // nosemgrep: go_filesystem_rule-fileread
 		if err != nil || string(actual) != "last-known-good" {
 			t.Fatalf("target changed: %q (%v)", actual, err)
 		}
