@@ -3,6 +3,9 @@
 # This file is copied byte-for-byte to BASH_ENV. Its own coverage uses xtrace,
 # independently of the DEBUG events it emits for the program under test.
 _forgerules_mark_failure() {
+    if [[ -n "${FORGERULES_COVERAGE_LATCH:-}" ]]; then
+        command /bin/rm -f -- "$FORGERULES_COVERAGE_LATCH" 2>/dev/null || :
+    fi
     if [[ -n "${FORGERULES_COVERAGE_FAILURE:-}" ]]; then
         printf '%s\n' "${BASHPID:-$$}" 2>/dev/null >>"${FORGERULES_COVERAGE_FAILURE}" || :
     fi

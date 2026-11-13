@@ -372,18 +372,23 @@ later
         fingerprint = self.collector.syntax_fingerprint(b"printf covered")
         (directory / "events.json").write_text(json.dumps({"events": [["Scripts/probe.sh", 1, fingerprint, self.collector.digest(root / "Scripts/probe.sh"), "5.3.15(1)", "", ""]]}))
         (directory / "trace-environment.sh").write_text(":\n")
+        (directory / "trace-success").write_bytes(b"fixture-latch")
+        (directory / "write-failures").write_text("")
         record = {"sources": self.collector.snapshot(root), "base": "base", "head": "head", "exit": 0,
                   "started_ns": 1, "finished_ns": 2, "parser": "v3.12.0",
-                  "bash": "GNU bash, version 5.3.15(1)", "trace_format": 3,
+                  "bash": "GNU bash, version 5.3.15(1)", "trace_format": 4,
                   "events_sha256": self.collector.digest(directory / "events.json"),
-                  "helper_sha256": self.collector.digest(directory / "trace-environment.sh")}
+                  "helper_sha256": self.collector.digest(directory / "trace-environment.sh"),
+                  "success_latch": {"identity": self.collector.file_identity(directory / "trace-success"),
+                                    "sha256": self.collector.digest(directory / "trace-success")},
+                  "failure_sha256": self.collector.digest(directory / "write-failures")}
         (directory / "evidence.json").write_text(json.dumps(record))
         return directory, record
 
     def test_trace_provenance_negative_cases(self):
         for change in [{"base": "other"}, {"head": "other"}, {"sources": {}}, {"exit": 1},
                        {"finished_ns": 0}, {"parser": "future"}, {"bash": "old"},
-                       {"trace_format": 2}, {"trace_format": True}, {"bash": "GNU bash, version 5.3.150(1)"},
+                       {"trace_format": 3}, {"trace_format": True}, {"bash": "GNU bash, version 5.3.150(1)"},
                        {"events_sha256": "stale"}, {"helper_sha256": "stale"}]:
             with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -611,10 +616,39 @@ mv saved Scripts/lib.sh
                 self.collector.finalize_events(root, evidence, self.collector.snapshot(root))
             self.assertFalse((evidence / "events.json").exists())
 
+    def test_event_and_marker_append_failures_preserve_target_but_never_finalize(self):
+        for mode in ("event-only", "event-and-marker", "restored-permissions"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                targets = '"$FORGERULES_COVERAGE_EVENTS/$BASHPID.events"'
+                if mode != "event-only": targets += ' "$FORGERULES_COVERAGE_FAILURE"'
+                body = 'set -euo pipefail\ntrap \'printf "%s" "$?" > "$TARGET_STATUS"\' EXIT\nprintf before\nchmod a-w ' + targets + '\nprintf after\n'
+                if mode == "restored-permissions": body += 'chmod u+w ' + targets + '\n'
+                self.review_fixture(root, {"Scripts/main.sh": body})
+                plain = root / "plain"
+                plain.mkdir()
+                environment = os.environ.copy()
+                environment.pop("BASH_ENV", None)
+                environment.update({"FORGERULES_COVERAGE_EVENTS": str(plain),
+                                    "FORGERULES_COVERAGE_FAILURE": str(plain / "write-failures"),
+                                    "TARGET_STATUS": str(plain / "status")})
+                setup = ': > "$FORGERULES_COVERAGE_EVENTS/$BASHPID.events"\n: > "$FORGERULES_COVERAGE_FAILURE"\n'
+                result = subprocess.run(["/opt/homebrew/bin/bash", "-c", setup + body], env=environment,
+                                        shell=False, capture_output=True, text=True)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "beforeafter", ""))
+                with mock.patch.dict(os.environ, {"TARGET_STATUS": str(root / "traced-status")}):
+                    with self.assertRaisesRegex(self.collector.CoverageError, "incomplete|write failure"):
+                        self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+                self.assertEqual((root / "evidence/run.log").read_text(), result.stdout)
+                self.assertEqual((root / "traced-status").read_text(), (plain / "status").read_text())
+                self.assertFalse((root / "evidence/events.json").exists())
+
     def run_hook_meta(self, hook, program, label, bash="/opt/homebrew/bin/bash", hasher="/usr/bin/openssl", virtual=False):
         artifact = Path(tempfile.mkdtemp(prefix="forgerules-hook-meta-"))
         events = artifact / "events"
         if label != "log-failure": events.mkdir()
+        latch = artifact / "trace-success"
+        latch.write_bytes(b"independent-fixture-latch")
         nonce = uuid.uuid4().hex[:16]
         driver = artifact / "driver.sh"
         driver.write_text('PS4="$FORGE_META_PS4"\nsource "$FORGE_HOOK"\nset -euo pipefail\n' + program + "\n")
@@ -624,7 +658,7 @@ mv saved Scripts/lib.sh
         environment.pop("BASH_ENV", None)
         environment.pop("BASH_XTRACEFD", None)
         environment.update({"FORGERULES_COVERAGE_EVENTS": str(events), "FORGERULES_COVERAGE_HASHER": hasher,
-                            "FORGERULES_COVERAGE_FAILURE": str(artifact / "write-failures"),
+                            "FORGERULES_COVERAGE_FAILURE": str(artifact / "write-failures"), "FORGERULES_COVERAGE_LATCH": str(latch),
                             "FORGE_META_PS4": "+FORGE_META_" + nonce + "\t${BASH_VERSION}\t${BASHPID:-$$}\t${BASH_SOURCE[0]:-$0}\t${LINENO}\t"})
         version = subprocess.check_output([bash, "-c", 'printf "%s" "$BASH_VERSION"'], env=environment, text=True)
         results = []
@@ -660,6 +694,7 @@ mv saved Scripts/lib.sh
                   "xtrace_channel": "BASH_XTRACEFD" if version.startswith("5.") else "Bash3 stderr negative fixture"}
         if label == "log-failure":
             self.assertTrue((artifact / "write-failures").read_text().strip())
+            self.assertFalse(latch.exists())
         return record
 
     def test_independent_hook_profiles_preserve_program_effects(self):

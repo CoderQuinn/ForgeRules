@@ -27,3 +27,5 @@ Independent collector review requested corrections for actual sourced-file ident
 The next correction binds runtime loaded definitions to the exact enclosing source function, rejects ambiguous same-name declarations and canonicalizes the base commit before evidence creation. Cached-function/removed-guard and invalid-base RED cases precede this implementation. Extracted-hook measurement and whole-production gates remain open.
 
 Combined checkpoint integrates the independently reviewed block/while redirect patch with first-class hook meta-evidence and failure-neutral logging. All source scopes remain separate; whole-release numeric qualification still requires fresh committed-source collection after all test/support files are frozen.
+
+The simultaneous event/marker append-failure review finding is reproduced with actual processes and prior valid events. The bounded success-latch correction preserves target `beforeafter` output and exit zero while rejecting event-only, dual-file and restored-permission cases before finalization. Its narrow re-review precedes expensive final release collection.

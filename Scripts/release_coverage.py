@@ -277,6 +277,17 @@ def file_identity(path):
             "link": os.readlink(path) if path.is_symlink() else None}
 
 
+def check_success_latch(directory, expected):
+    latch = directory / "trace-success"
+    try:
+        valid = (latch.is_file() and not latch.is_symlink()
+                 and file_identity(latch) == expected["identity"] and digest(latch) == expected["sha256"])
+    except OSError:
+        valid = False
+    if not valid:
+        raise CoverageError("incomplete trace: invalidated success latch")
+
+
 def hook_coverage(data, hook=HOOK):
     """Measure the hook using independent xtrace, never its DEBUG event output."""
     runs = data.get("runs", [])
@@ -337,8 +348,10 @@ def event_fingerprint(command):
     return syntax_fingerprint(command)
 
 
-def finalize_events(root, directory, sources):
+def finalize_events(root, directory, sources, latch=None):
     root = root.resolve()
+    if latch is not None:
+        check_success_latch(directory, latch)
     aliases = {}
     for name, sha in sources.items():
         aliases.setdefault(sha, []).append(name)
@@ -405,8 +418,12 @@ def load_evidence(root, directories, base, head):
         if record["exit"] != 0 or record["finished_ns"] < record["started_ns"]:
             raise CoverageError("failed or incomplete trace run")
         if (record["parser"] != PARSER_VERSION or not record["bash"].startswith("GNU bash, version 5.3.15(")
-                or type(record["trace_format"]) is not int or record["trace_format"] != 3):
+                or type(record["trace_format"]) is not int or record["trace_format"] != 4):
             raise CoverageError("unsupported trace tool versions")
+        check_success_latch(directory, record["success_latch"])
+        failure_flag = directory / "write-failures"
+        if failure_flag.stat().st_size or digest(failure_flag) != record["failure_sha256"]:
+            raise CoverageError("incomplete trace: hook write failure")
         if digest(directory / "trace-environment.sh") != record["helper_sha256"]:
             raise CoverageError("stale trace helper")
         events = directory / "events.json"
@@ -442,25 +459,31 @@ def collect(root, directory, entry, base):
     directory.mkdir(parents=True, exist_ok=False)
     (directory / "temporary-events").mkdir()
     (directory / "write-failures").write_text("")
+    success = directory / "trace-success"
+    success.write_bytes(os.urandom(32))
+    success.chmod(0o600)
+    latch = {"identity": file_identity(success), "sha256": digest(success)}
     helper = directory / "trace-environment.sh"
     shutil.copyfile(HOOK, helper)
     started = time.time_ns()
     environment = os.environ.copy()
     environment.update({"PATH": str(Path(bash).parent) + os.pathsep + environment["PATH"],
                         "BASH_ENV": str(helper), "FORGERULES_COVERAGE_EVENTS": str(directory / "temporary-events"),
-                        "FORGERULES_COVERAGE_HASHER": "/usr/bin/openssl", "FORGERULES_COVERAGE_FAILURE": str(directory / "write-failures")})
+                        "FORGERULES_COVERAGE_HASHER": "/usr/bin/openssl", "FORGERULES_COVERAGE_FAILURE": str(directory / "write-failures"),
+                        "FORGERULES_COVERAGE_LATCH": str(success)})
     command = [bash, str(root / entry)]
     with (directory / "run.log").open("wb") as log:
         result = subprocess.run(command, shell=False, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT)
     if sources != snapshot(root):
         raise CoverageError("source changed during trace collection")
-    events = finalize_events(root, directory, sources)
+    events = finalize_events(root, directory, sources, latch)
     record = {"sources": sources, "base": base,
               "head": checked(["git", "rev-parse", "HEAD"], cwd=root).decode().strip(),
-              "parser": parser_version, "bash": bash_version, "trace_format": 3,
+              "parser": parser_version, "bash": bash_version, "trace_format": 4,
               "command": command, "exit": result.returncode, "started_ns": started,
               "finished_ns": time.time_ns(), "events_sha256": digest(events), "helper_sha256": digest(helper),
-              "hash_backend": checked(["/usr/bin/openssl", "version"]).decode().strip()}
+              "hash_backend": checked(["/usr/bin/openssl", "version"]).decode().strip(),
+              "success_latch": latch, "failure_sha256": digest(directory / "write-failures")}
     (directory / "evidence.json").write_text(json.dumps(record, indent=2) + "\n")
     if result.returncode:
         raise CoverageError("trace command failed; inspect " + str(directory / "run.log"))
