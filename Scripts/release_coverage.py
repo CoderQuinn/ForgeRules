@@ -126,10 +126,11 @@ def command_sites(source):
             rows.add(node["OpPos"]["Line"])
         return rows
 
-    def visit(node, substitutions=(), function=None, entered_redirect_rows=()):
+    def visit(node, substitutions=(), function=None, entered_redirect_rows=(),
+              statement_owner=None, substitution_owner=None):
         if isinstance(node, list):
             for child in node:
-                visit(child, substitutions, function, entered_redirect_rows)
+                visit(child, substitutions, function, entered_redirect_rows, statement_owner, substitution_owner)
         elif isinstance(node, dict):
             compound_redirect_rows = set()
             if node.get("Type") == "FuncDecl":
@@ -137,8 +138,14 @@ def command_sites(source):
                 function = {"name": node["Name"]["Value"], "fingerprint": syntax_fingerprint(syntax)}
                 # A body may run long after its declaration's enclosing block.
                 entered_redirect_rows = ()
+                statement_owner = substitution_owner = None
             if node.get("Type") in {"CmdSubst", "ProcSubst"}:
                 substitutions += (node["End"]["Line"],)
+                # Pinned Bash can report a simple substitution at its owner's
+                # start. Do not extend this to branches or multiple statements.
+                statements = node.get("Stmts", [])
+                substitution_owner = statement_owner if (len(statements) == 1 and
+                    statements[0].get("Cmd", {}).get("Type") in {"CallExpr", "DeclClause"}) else None
             if "Cmd" not in node and node.get("Redirs"):
                 rows = set()
                 for redirect in node["Redirs"]:
@@ -149,6 +156,7 @@ def command_sites(source):
                               "fingerprint": syntax_fingerprint(syntax), "function": function,
                               "entered_redirect_rows": sorted(entered_redirect_rows),
                               "runtime_lines": sorted({node["Pos"]["Line"], node["End"]["Line"], *substitutions})})
+                statement_owner = substitution_owner = None
             if "Cmd" in node:
                 command = node["Cmd"]
                 if command["Type"] in CONTAINERS and node.get("Redirs"):
@@ -182,13 +190,19 @@ def command_sites(source):
                                   "fingerprint": fingerprint, "function": function,
                                   "entered_redirect_rows": sorted(entered_redirect_rows),
                                   "runtime_lines": sorted({anchor, command["End"]["Line"], *substitutions})})
+                    if (substitution_owner is not None and sites[substitution_owner]["function"] == function
+                            and sites[substitution_owner]["anchor"] not in sites[-1]["runtime_lines"]):
+                        sites[-1]["runtime_start_alias"] = {"row": sites[substitution_owner]["anchor"],
+                                                           "owner_site": substitution_owner}
+                statement_owner = len(sites) - 1 if kind in {"CallExpr", "DeclClause"} else None
+                substitution_owner = None
             for key, value in node.items():
                 # Bash applies container redirects before its commands/conditions,
                 # but target substitutions run before redirect success is known.
                 entered = set(entered_redirect_rows)
                 if key == "Cmd":
                     entered.update(compound_redirect_rows)
-                visit(value, substitutions, function, tuple(sorted(entered)))
+                visit(value, substitutions, function, tuple(sorted(entered)), statement_owner, substitution_owner)
     visit(tree)
     return sites
 
@@ -237,13 +251,27 @@ def summarize(root, sources, hits, changed, hook=None):
             raise CoverageError("missing trace source: " + name)
         sites = command_sites((root / name).read_bytes())
         owned = {line for site in sites for line in site["rows"]}
-        covered, ambiguous = set(), []
+        covered, ambiguous, confirmed, event_sites = set(), [], set(), []
         for event in hits[name]:
             runtime, fingerprint, *context = event
             function_name, definition = context if context else ("", "")
             function = {"name": function_name, "fingerprint": definition} if function_name else None
-            candidates = [site for site in sites if runtime in site["runtime_lines"]
-                          and fingerprint == site["fingerprint"] and function == site["function"]]
+            direct = [index for index, site in enumerate(sites) if runtime in site["runtime_lines"]
+                      and fingerprint == site["fingerprint"] and function == site["function"]]
+            if len({(tuple(sites[index]["rows"]), tuple(sites[index].get("entered_redirect_rows", [])))
+                    for index in direct}) <= 1:
+                confirmed.update(direct)
+            event_sites.append((runtime, fingerprint, function, direct))
+        for runtime, fingerprint, function, direct in event_sites:
+            candidates = [sites[index] for index in direct]
+            if any(site.get("runtime_start_alias", {}).get("row") == runtime
+                   and site["runtime_start_alias"]["owner_site"] in confirmed
+                   and fingerprint == site["fingerprint"] and function == site["function"] for site in sites):
+                # EXIT handlers can retain another command's stale syntax at
+                # this row. An alias needs its owner and globally unique syntax
+                # within the same approved function, not just a matching row.
+                candidates = [site for site in sites if fingerprint == site["fingerprint"]
+                              and function == site["function"]]
             if len({(tuple(site["rows"]), tuple(site.get("entered_redirect_rows", [])))
                     for site in candidates}) > 1:
                 ambiguous.append({"runtime_row": runtime, "fingerprint": fingerprint,

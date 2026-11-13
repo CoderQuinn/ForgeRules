@@ -356,6 +356,156 @@ later
             self.assertEqual(report["files"][0]["uncovered"], [1, 2, 4, 5, 8, 9])
             self.assertEqual(report["files"][0]["ambiguous_events"][0]["candidate_anchors"], [4, 8])
 
+    def native_fixture_report(self, root, files):
+        self.review_fixture(root, files)
+        self.collector.collect(root, root / "evidence", "Scripts/main.sh", "HEAD")
+        head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        sources, hits, _ = self.collector.load_evidence(root, [root / "evidence"], head, head)
+        return self.collector.summarize(root, sources, hits, {})
+
+    def test_start_aliases_match_simple_substitutions_in_the_approved_function(self):
+        body = r'''read -r first < <(
+ printf 'from_read\n'
+)
+readonly second="$(
+ printf from_readonly
+)"
+printf '%s:%s' "$first" "$second"
+'''
+        for function in (False, True):
+            with self.subTest(function=function), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                source = "f(){\n" + body + "}\nf\n" if function else "set -euo pipefail\n" + body
+                report = self.native_fixture_report(root, {"Scripts/main.sh": source})
+                self.assertEqual((root / "evidence/run.log").read_text(), "from_read:from_readonly")
+                self.assertEqual(report["files"][0]["uncovered"], [])
+
+    def test_start_aliases_keep_skipped_and_failed_substitutions_uncovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report = self.native_fixture_report(root, {"Scripts/main.sh": '''if false; then
+ read -r value < <(
+  printf skipped_read
+ )
+ readonly skipped="$(
+  printf skipped_value
+ )"
+fi
+read -r value < absent < <(
+ printf failed_read
+) ||
+ :
+printf survived
+'''})
+            self.assertEqual(report["files"][0]["uncovered"], [2, 3, 5, 6, 10])
+            self.assertTrue((root / "evidence/run.log").read_text().endswith("survived"))
+
+    def test_start_aliases_report_duplicate_substitutions_as_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report = self.native_fixture_report(root, {"Scripts/main.sh": '''readonly left="$(
+ printf same
+)" right="$(
+ printf same
+)"
+'''})
+            self.assertEqual(report["files"][0]["uncovered"], [2, 4])
+            self.assertEqual(len(report["files"][0]["ambiguous_events"]), 1)
+            self.assertEqual(report["files"][0]["ambiguous_events"][0]["candidate_anchors"], [2, 4])
+
+    def test_start_aliases_reject_exit_stale_syntax_for_inactive_producers(self):
+        cases = {
+            "skipped-owner": ('''trap 'printf handler' EXIT; if false; then readonly value="$(
+ printf last
+)"; fi
+printf last
+''', [2]),
+            "failed-producer": (r'''trap $':\n:' EXIT
+read -r value < absent < <(
+ printf last
+) ||
+ :
+printf last
+''', [3]),
+        }
+        for name, (source, uncovered) in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                report = self.native_fixture_report(root, {"Scripts/main.sh": source})
+                self.assertEqual(report["files"][0]["uncovered"], uncovered)
+                if name == "failed-producer":
+                    ambiguous = report["files"][0]["ambiguous_events"]
+                    self.assertEqual(len(ambiguous), 1)
+                    self.assertEqual(ambiguous[0]["runtime_row"], 2)
+                    self.assertEqual(ambiguous[0]["candidate_anchors"], [3, 6])
+
+    def test_start_aliases_do_not_borrow_other_function_or_external_source_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report = self.native_fixture_report(root, {"Scripts/main.sh": '''f(){ printf shared; }; g(){ read -r value < absent < <(
+ printf shared
+) ||
+ :
+}
+g
+f
+'''})
+            self.assertIn(2, report["files"][0]["uncovered"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "repository"
+            root.mkdir()
+            external = Path(tmp) / "external.sh"
+            external.write_text(":\nprintf shared\n")
+            with mock.patch.dict(os.environ, {"ALIAS_EXTERNAL": str(external)}):
+                report = self.native_fixture_report(root, {"Scripts/main.sh": '''trap 'source "$ALIAS_EXTERNAL"' EXIT
+read -r value < absent < <(
+ printf shared
+) ||
+ :
+printf main_end
+'''})
+            self.assertIn(3, report["files"][0]["uncovered"])
+            events = json.loads((root / "evidence/events.json").read_text())
+            self.assertIn(str(external.resolve()), events["external_sources"])
+
+    def test_start_alias_context_stops_at_function_declarations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Scripts").mkdir()
+            source = b'holder="$(\n f(){\n  printf hidden\n }\n)"\n'
+            (root / "Scripts/probe.sh").write_bytes(source)
+            definition = self.collector.function_definitions(source)["f"][0]
+            events = {(1, self.collector.syntax_fingerprint(source), "", ""),
+                      (1, self.collector.syntax_fingerprint(b"printf hidden"), "f", definition)}
+            report = self.collector.summarize(root, self.collector.snapshot(root),
+                                              {"Scripts/probe.sh": events}, {})
+            self.assertIn(3, report["files"][0]["uncovered"])
+
+    def test_start_aliases_require_owner_evidence_and_a_direct_substitution_body(self):
+        simple = b'readonly value="$(\n printf same\n)"\n'
+        conditional = b'readonly value="$(\n if true; then\n  printf same\n else\n  printf same\n fi\n)"\n'
+        for source, owner_seen, uncovered in [(simple, False, [1, 2]), (simple, True, []),
+                                                (conditional, True, [2, 3, 5])]:
+            with self.subTest(source=source, owner_seen=owner_seen), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "Scripts").mkdir()
+                (root / "Scripts/probe.sh").write_bytes(source)
+                events = {(1, self.collector.syntax_fingerprint(b"printf same"))}
+                if owner_seen:
+                    events.add((1, self.collector.syntax_fingerprint(source)))
+                report = self.collector.summarize(root, self.collector.snapshot(root),
+                                                  {"Scripts/probe.sh": events}, {})
+                self.assertEqual(report["files"][0]["uncovered"], uncovered)
+
+    def test_direct_substitution_events_keep_their_existing_row_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report = self.native_fixture_report(root, {"Scripts/main.sh": '''readonly first="$(printf same)"
+readonly second="$(printf same)"
+'''})
+            self.assertEqual(report["files"][0]["uncovered"], [])
+            self.assertEqual(report["files"][0]["ambiguous_events"], [])
+
     def test_changed_row_parser_includes_continuations_and_zero_count_hunks(self):
         diff = b'''diff --git a/Scripts/a.sh b/Scripts/a.sh
 +++ b/Scripts/a.sh
